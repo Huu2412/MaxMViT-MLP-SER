@@ -1,0 +1,36 @@
+
+experiment_name: "iemocap_baseline_4class"
+
+dataset:
+  name: "iemocap"
+  args:
+    hf_id: "AbstractTTS/IEMOCAP"
+    batch_size: 16
+    num_workers: 16
+    target_size: [244, 244] # Paper Size
+
+model:
+  name: "maxmvit_mlp"
+  type: "crossattn"  # Options: original, gmu, crossattn
+  num_classes: 4
+  hidden_size: 512
+  dropout_rate: 0.2
+  # Cross-Attention specific
+  num_heads: 8
+  fusion_type: "concat"  # Options: concat, add, gated
+
+
+training:
+  epochs: 50
+  lr: 0.0002 # Paper value (CRITICAL: 0.02)
+  patience: 10
+  seed: 42
+  device: "cuda"
+  scheduler:
+    factor: 0.1
+    patience: 3
+    min_lr: 1e-6
+  
+paths:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
