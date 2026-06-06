@@ -2,6 +2,7 @@
 import logging
 from .ravdess import get_ravdess_dataloaders
 from .iemocap_hf import get_hf_dataloaders
+from .visec import get_visec_dataloaders
 # from .iemocap_local import get_iemocap_dataloaders # ready if needed
 
 def get_dataloaders(config):
@@ -28,5 +29,10 @@ def get_dataloaders(config):
         if not hf_id: hf_id = "AbstractTTS/IEMOCAP"
         return get_hf_dataloaders(hf_id=hf_id, batch_size=batch_size, num_workers=num_workers)
     
+    elif name in ['visec', 'anyf']:
+        # ViSEC / anyf defaults
+        if not hf_id: hf_id = "hustep-lab/ViSEC"
+        return get_visec_dataloaders(hf_id=hf_id, batch_size=batch_size, num_workers=num_workers)
+    
     else:
-        raise ValueError(f"Unknown dataset name: {name}. Supported: ravdess, iemocap")
+        raise ValueError(f"Unknown dataset name: {name}. Supported: ravdess, iemocap, visec, anyf")
