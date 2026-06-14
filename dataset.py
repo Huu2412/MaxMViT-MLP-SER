@@ -61,13 +61,25 @@ class SERDataset(Dataset):
         mel = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=self.n_fft, hop_length=self.hop_length)
         mel_db = librosa.power_to_db(mel, ref=np.max)
         
+        # Calculate Delta and Delta-Delta robustly
+        t = mel_db.shape[1]
+        if t >= 3:
+            width = min(9, t)
+            if width % 2 == 0:
+                width = max(3, width - 1)
+            mel_delta = librosa.feature.delta(mel_db, order=1, width=width)
+            mel_delta2 = librosa.feature.delta(mel_db, order=2, width=width)
+        else:
+            mel_delta = np.zeros_like(mel_db)
+            mel_delta2 = np.zeros_like(mel_db)
+        
         # --- Resize & Normalize ---
         cqt_img = self._resize_normalize(cqt_db)
-        mel_img = self._resize_normalize(mel_db)
+        mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
         
-        # To Tensor [1, H, W]
+        # To Tensor [1, H, W] for CQT, and [3, H, W] for Mel
         cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32).unsqueeze(0)
-        mel_tensor = torch.tensor(mel_img, dtype=torch.float32).unsqueeze(0)
+        mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
         
         return cqt_tensor, mel_tensor, torch.tensor(label, dtype=torch.long)
         
@@ -75,15 +87,21 @@ class SERDataset(Dataset):
         # Normalize to 0-255 or 0-1. Vision models usually like 0-1 or standard normalization.
         # Paper doesn't specify normalization, but implicitly required for images.
         # Let's normalize globally to 0-1 per image.
-        spec_min = spec.min()
-        spec_max = spec.max()
-        spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
-        
-        # Resize
-        # cv2.resize expects (W, H)
-        spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
-        
-        return spec_resized
+        if isinstance(spec, (list, tuple)):
+            channels = []
+            for s in spec:
+                s_min = s.min()
+                s_max = s.max()
+                s_norm = (s - s_min) / (s_max - s_min + 1e-8)
+                s_resized = cv2.resize(s_norm, (self.target_size[1], self.target_size[0]))
+                channels.append(s_resized)
+            return np.stack(channels, axis=0)
+        else:
+            spec_min = spec.min()
+            spec_max = spec.max()
+            spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
+            spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
+            return spec_resized
 
 def get_dataloader(paths, labels, batch_size=32, shuffle=True):
     dataset = SERDataset(paths, labels)

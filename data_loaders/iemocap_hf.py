@@ -124,9 +124,21 @@ class IEMOCAPHFDataset(Dataset):
             mel = librosa.feature.melspectrogram(y=y, sr=self.sr, n_fft=self.n_fft, hop_length=self.hop_length)
             mel_db = librosa.power_to_db(mel, ref=np.max)
             
+            # Calculate Delta and Delta-Delta robustly
+            t = mel_db.shape[1]
+            if t >= 3:
+                width = min(9, t)
+                if width % 2 == 0:
+                    width = max(3, width - 1)
+                mel_delta = librosa.feature.delta(mel_db, order=1, width=width)
+                mel_delta2 = librosa.feature.delta(mel_db, order=2, width=width)
+            else:
+                mel_delta = np.zeros_like(mel_db)
+                mel_delta2 = np.zeros_like(mel_db)
+            
             # Resize & Normalize
             cqt_img = self._resize_normalize(cqt_db)
-            mel_img = self._resize_normalize(mel_db)
+            mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
             
             cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)
             mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
@@ -139,13 +151,21 @@ class IEMOCAPHFDataset(Dataset):
             return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long)
 
     def _resize_normalize(self, spec):
-        spec_min = spec.min()
-        spec_max = spec.max()
-        spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
-        spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
-        
-        # Convert to 3 channels (RGB) by replicating
-        spec_3ch = np.stack([spec_resized]*3, axis=0) # [3, H, W]
+        if isinstance(spec, (list, tuple)):
+            channels = []
+            for s in spec:
+                s_min = s.min()
+                s_max = s.max()
+                s_norm = (s - s_min) / (s_max - s_min + 1e-8)
+                s_resized = cv2.resize(s_norm, (self.target_size[1], self.target_size[0]))
+                channels.append(s_resized)
+            spec_3ch = np.stack(channels, axis=0)
+        else:
+            spec_min = spec.min()
+            spec_max = spec.max()
+            spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
+            spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
+            spec_3ch = np.stack([spec_resized]*3, axis=0) # [3, H, W]
         
         # Normalize with ImageNet mean/std
         # spec_resized is in [0, 1].

@@ -32,7 +32,8 @@ def get_dataloaders(config):
     elif name in ['visec', 'anyf']:
         # ViSEC / anyf defaults
         if not hf_id: hf_id = "hustep-lab/ViSEC"
-        return get_visec_dataloaders(hf_id=hf_id, batch_size=batch_size, num_workers=num_workers)
+        spec_augment_cfg = ds_config.get('args', {}).get('spec_augment', None)
+        return get_visec_dataloaders(hf_id=hf_id, batch_size=batch_size, num_workers=num_workers, spec_augment_cfg=spec_augment_cfg)
     
     else:
         raise ValueError(f"Unknown dataset name: {name}. Supported: ravdess, iemocap, visec, anyf")

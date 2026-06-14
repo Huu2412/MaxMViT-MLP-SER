@@ -111,7 +111,7 @@ def train(config_path):
         min_lr=float(sched_cfg.get('min_lr', 1e-6))
     ) for opt in optimizers]
     
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     
     # 6. Training Loop
     logging.info("Starting Training...")
