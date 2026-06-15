@@ -39,6 +39,7 @@ class ViSECDataset(Dataset):
         self.time_mask_param = _cfg.get('time_mask_param', 100)
         self.num_freq_masks = _cfg.get('num_freq_masks', 1)
         self.num_time_masks = _cfg.get('num_time_masks', 1)
+        self.spec_augment_prob = _cfg.get('prob', 0.5)  # Default: 50% probability
         
         print(f"Loading {hf_id}...")
         # Disable auto-decoding to avoid torchcodec issues
@@ -117,7 +118,8 @@ class ViSECDataset(Dataset):
                 cqt_delta2 = np.zeros_like(cqt_db)
             
             # Apply SpecAugment before resize (training only)
-            if self.augment:
+            # Apply SpecAugment before resize (training only) based on probability
+            if self.augment and random.random() < self.spec_augment_prob:
                 cqt_db = self._spec_augment(cqt_db)
                 cqt_delta = self._spec_augment(cqt_delta)
                 cqt_delta2 = self._spec_augment(cqt_delta2)

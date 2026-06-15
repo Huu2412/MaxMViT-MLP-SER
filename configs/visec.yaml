@@ -11,12 +11,13 @@ dataset:
     spec_augment:
       freq_mask_param: 27   # Max frequency mask width (F in paper)
       time_mask_param: 100  # Max time mask width (T in paper)
-      num_freq_masks: 2     # Number of frequency masks
-      num_time_masks: 2     # Number of time masks
+      num_freq_masks: 1     # Number of frequency masks
+      num_time_masks: 1     # Number of time masks
+      prob: 0.5             # Probability of applying SpecAugment (50%)
 
 model:
   name: "maxmvit_mlp"
-  type: "crossattn"  # Options: original, gmu, crossattn
+  type: "gmu"  # Options: original, gmu, crossattn
   num_classes: 4
   hidden_size: 512
   dropout_rate: 0.2
