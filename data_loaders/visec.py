@@ -105,30 +105,15 @@ class ViSECDataset(Dataset):
                 mel_delta = np.zeros_like(mel_db)
                 mel_delta2 = np.zeros_like(mel_db)
                 
-            # Calculate CQT Delta and Delta-Delta robustly
-            t_cqt = cqt_db.shape[1]
-            if t_cqt >= 3:
-                width_cqt = min(9, t_cqt)
-                if width_cqt % 2 == 0:
-                    width_cqt = max(3, width_cqt - 1)
-                cqt_delta = librosa.feature.delta(cqt_db, order=1, width=width_cqt)
-                cqt_delta2 = librosa.feature.delta(cqt_db, order=2, width=width_cqt)
-            else:
-                cqt_delta = np.zeros_like(cqt_db)
-                cqt_delta2 = np.zeros_like(cqt_db)
-            
-            # Apply SpecAugment before resize (training only)
             # Apply SpecAugment before resize (training only) based on probability
             if self.augment and random.random() < self.spec_augment_prob:
                 cqt_db = self._spec_augment(cqt_db)
-                cqt_delta = self._spec_augment(cqt_delta)
-                cqt_delta2 = self._spec_augment(cqt_delta2)
                 
                 mel_db = self._spec_augment(mel_db)
                 mel_delta = self._spec_augment(mel_delta)
                 mel_delta2 = self._spec_augment(mel_delta2)
             
-            cqt_img = self._resize_normalize([cqt_db, cqt_delta, cqt_delta2])
+            cqt_img = self._resize_normalize(cqt_db)
             mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
             
             cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)

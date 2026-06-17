@@ -73,20 +73,8 @@ class SERDataset(Dataset):
             mel_delta = np.zeros_like(mel_db)
             mel_delta2 = np.zeros_like(mel_db)
 
-        # Calculate CQT Delta and Delta-Delta robustly
-        t_cqt = cqt_db.shape[1]
-        if t_cqt >= 3:
-            width_cqt = min(9, t_cqt)
-            if width_cqt % 2 == 0:
-                width_cqt = max(3, width_cqt - 1)
-            cqt_delta = librosa.feature.delta(cqt_db, order=1, width=width_cqt)
-            cqt_delta2 = librosa.feature.delta(cqt_db, order=2, width=width_cqt)
-        else:
-            cqt_delta = np.zeros_like(cqt_db)
-            cqt_delta2 = np.zeros_like(cqt_db)
-        
         # --- Resize & Normalize ---
-        cqt_img = self._resize_normalize([cqt_db, cqt_delta, cqt_delta2])
+        cqt_img = self._resize_normalize(cqt_db)
         mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
         
         # To Tensor [3, H, W]
@@ -113,7 +101,7 @@ class SERDataset(Dataset):
             spec_max = spec.max()
             spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
             spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
-            return spec_resized
+            return np.stack([spec_resized]*3, axis=0)
 
 def get_dataloader(paths, labels, batch_size=32, shuffle=True):
     dataset = SERDataset(paths, labels)
