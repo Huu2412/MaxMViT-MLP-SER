@@ -6,11 +6,13 @@ import cv2
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset, Audio
 import logging
+import random
+import copy
 
 class RAVDESSHFDataset(Dataset):
     def __init__(self, hf_id="TwinkStart/RAVDESS", split="ravdess_emo", 
                  target_classes=['neutral', 'calm', 'happy', 'sad', 'angry', 'fear', 'disgust', 'surprise'], 
-                 sr=44100, target_size=(224, 224)):
+                 sr=44100, target_size=(224, 224), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None):
         """
         Dataset class for RAVDESS from Hugging Face.
         """
@@ -18,6 +20,32 @@ class RAVDESSHFDataset(Dataset):
         self.target_size = target_size
         self.target_classes = target_classes
         self.class_map = {c: i for i, c in enumerate(target_classes)}
+        self.augment = augment
+        
+        # SpecAugment parameters
+        _cfg = spec_augment_cfg or {}
+        self.freq_mask_param = _cfg.get('freq_mask_param', 27)
+        self.time_mask_param = _cfg.get('time_mask_param', 100)
+        self.num_freq_masks = _cfg.get('num_freq_masks', 1)
+        self.num_time_masks = _cfg.get('num_time_masks', 1)
+        self.spec_augment_prob = _cfg.get('prob', 0.5)
+
+        # Waveform augmentation configs
+        _pitch_cfg = pitch_shift_cfg or {}
+        self.pitch_shift_prob = _pitch_cfg.get('prob', 0.0)
+        self.pitch_shift_range = _pitch_cfg.get('n_steps_range', [-2.0, 2.0])
+        
+        _time_cfg = time_shift_cfg or {}
+        self.time_shift_prob = _time_cfg.get('prob', 0.0)
+        if 'range' in _time_cfg:
+            self.time_shift_range = _time_cfg['range']
+            self.use_time_stretch = True
+        elif 'limit' in _time_cfg:
+            self.time_shift_limit = _time_cfg['limit']
+            self.use_time_stretch = False
+        else:
+            self.time_shift_range = [0.9, 1.1]
+            self.use_time_stretch = True
         
         # Normalization params (ImageNet)
         self.mean = np.array([0.485, 0.456, 0.406])
@@ -88,6 +116,22 @@ class RAVDESSHFDataset(Dataset):
         if y.ndim > 1:
             y = np.mean(y, axis=0) 
             
+        # Waveform Augmentations (Pitch Shift and Time Shift/Stretch)
+        if self.augment:
+            # Time shift/stretch
+            if self.time_shift_prob > 0 and random.random() < self.time_shift_prob:
+                if self.use_time_stretch:
+                    rate = random.uniform(self.time_shift_range[0], self.time_shift_range[1])
+                    y = librosa.effects.time_stretch(y, rate=rate)
+                else:
+                    shift_amt = int(random.uniform(-self.time_shift_limit, self.time_shift_limit) * len(y))
+                    y = np.roll(y, shift_amt)
+            
+            # Pitch shift
+            if self.pitch_shift_prob > 0 and random.random() < self.pitch_shift_prob:
+                n_steps = random.uniform(self.pitch_shift_range[0], self.pitch_shift_range[1])
+                y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
+
         # Fix: Pad short audio to prevent Librosa warnings
         if len(y) < self.n_fft:
             padding = self.n_fft - len(y) + 1
@@ -115,6 +159,13 @@ class RAVDESSHFDataset(Dataset):
                 mel_delta = np.zeros_like(mel_db)
                 mel_delta2 = np.zeros_like(mel_db)
                 
+            # Apply SpecAugment before resize (training only) based on probability
+            if self.augment and random.random() < self.spec_augment_prob:
+                cqt_db = self._spec_augment(cqt_db)
+                mel_db = self._spec_augment(mel_db)
+                mel_delta = self._spec_augment(mel_delta)
+                mel_delta2 = self._spec_augment(mel_delta2)
+
             # Resize & Normalize
             cqt_img = self._resize_normalize(cqt_db)
             mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
@@ -127,6 +178,29 @@ class RAVDESSHFDataset(Dataset):
             print(f"Error processing sample {ds_idx}: {e}")
             dummy_img = torch.zeros((3, self.target_size[0], self.target_size[1]), dtype=torch.float32)
             return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long)
+
+    def _spec_augment(self, spec):
+        """
+        Apply SpecAugment: frequency masking + time masking.
+        Masks are filled with the mean value of the spectrogram.
+        """
+        spec = spec.copy()
+        num_freq, num_time = spec.shape
+        fill_value = spec.mean()
+        
+        # Frequency masking
+        for _ in range(self.num_freq_masks):
+            f = random.randint(0, min(self.freq_mask_param, num_freq - 1))
+            f0 = random.randint(0, num_freq - f)
+            spec[f0:f0 + f, :] = fill_value
+        
+        # Time masking
+        for _ in range(self.num_time_masks):
+            t = random.randint(0, min(self.time_mask_param, num_time - 1))
+            t0 = random.randint(0, num_time - t)
+            spec[:, t0:t0 + t] = fill_value
+        
+        return spec
 
     def _resize_normalize(self, spec):
         if isinstance(spec, (list, tuple)):
@@ -151,9 +225,15 @@ class RAVDESSHFDataset(Dataset):
             
         return spec_3ch
 
-def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_workers=4):
+def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None):
     try:
-        full_ds = RAVDESSHFDataset(hf_id, split="ravdess_emo")
+        full_ds = RAVDESSHFDataset(
+            hf_id, 
+            split="ravdess_emo", 
+            spec_augment_cfg=spec_augment_cfg,
+            pitch_shift_cfg=pitch_shift_cfg,
+            time_shift_cfg=time_shift_cfg
+        )
         
         # Manual Split 80/20
         full_indices = full_ds.indices
@@ -161,7 +241,6 @@ def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_worke
         val_len = int(total * 0.2)
         train_len = total - val_len
         
-        import random
         # Ensure reproducibility
         random.seed(42) 
         random.shuffle(full_indices)
@@ -169,12 +248,13 @@ def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_worke
         train_indices = full_indices[:train_len]
         val_indices = full_indices[train_len:]
         
-        import copy
         train_ds = copy.deepcopy(full_ds)
         train_ds.indices = train_indices
+        train_ds.augment = True  # Enable augmentations for training
         
         val_ds = copy.deepcopy(full_ds)
         val_ds.indices = val_indices
+        val_ds.augment = False  # No augment for validation
         
         print(f"Split RAVDESS: Train {len(train_ds)}, Val {len(val_ds)}")
         

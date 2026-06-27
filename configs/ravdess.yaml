@@ -8,6 +8,18 @@ dataset:
     batch_size: 4
     num_workers: 0
     target_size: [244, 244] # Paper Size
+    spec_augment:
+      freq_mask_param: 27   # Max frequency mask width
+      time_mask_param: 100  # Max time mask width
+      num_freq_masks: 1     # Number of frequency masks
+      num_time_masks: 1     # Number of time masks
+      prob: 0.5             # Probability of applying SpecAugment (50%)
+    pitch_shift:
+      prob: 0.5             # Probability of applying pitch shift
+      n_steps_range: [-2.0, 2.0] # Pitch shift range in semitones
+    time_shift:
+      prob: 0.5             # Probability of applying time shift
+      range: [0.9, 1.1]     # Time stretch rate range
 
 model:
   name: "maxmvit_mlp"

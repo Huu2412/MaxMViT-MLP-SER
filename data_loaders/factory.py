@@ -17,23 +17,48 @@ def get_dataloaders(config):
     hf_id = ds_config.get('args', {}).get('hf_id', '')
     root_dir = ds_config.get('args', {}).get('root_dir', '') # For local
 
+    # Augmentation configurations
+    spec_augment_cfg = ds_config.get('args', {}).get('spec_augment', None)
+    pitch_shift_cfg = ds_config.get('args', {}).get('pitch_shift', None)
+    time_shift_cfg = ds_config.get('args', {}).get('time_shift', None)
+
     logging.info(f"Factory initializing dataset: {name}")
 
     if name == 'ravdess':
         # RAVDESS defaults
         if not hf_id: hf_id = "TwinkStart/RAVDESS"
-        return get_ravdess_dataloaders(hf_id=hf_id, batch_size=batch_size, num_workers=num_workers)
+        return get_ravdess_dataloaders(
+            hf_id=hf_id, 
+            batch_size=batch_size, 
+            num_workers=num_workers,
+            spec_augment_cfg=spec_augment_cfg,
+            pitch_shift_cfg=pitch_shift_cfg,
+            time_shift_cfg=time_shift_cfg
+        )
     
     elif name == 'iemocap':
         # IEMOCAP HF defaults
         if not hf_id: hf_id = "AbstractTTS/IEMOCAP"
-        return get_hf_dataloaders(hf_id=hf_id, batch_size=batch_size, num_workers=num_workers)
+        return get_hf_dataloaders(
+            hf_id=hf_id, 
+            batch_size=batch_size, 
+            num_workers=num_workers,
+            spec_augment_cfg=spec_augment_cfg,
+            pitch_shift_cfg=pitch_shift_cfg,
+            time_shift_cfg=time_shift_cfg
+        )
     
     elif name in ['visec', 'anyf']:
         # ViSEC / anyf defaults
         if not hf_id: hf_id = "hustep-lab/ViSEC"
-        spec_augment_cfg = ds_config.get('args', {}).get('spec_augment', None)
-        return get_visec_dataloaders(hf_id=hf_id, batch_size=batch_size, num_workers=num_workers, spec_augment_cfg=spec_augment_cfg)
+        return get_visec_dataloaders(
+            hf_id=hf_id, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            spec_augment_cfg=spec_augment_cfg,
+            pitch_shift_cfg=pitch_shift_cfg,
+            time_shift_cfg=time_shift_cfg
+        )
     
     else:
         raise ValueError(f"Unknown dataset name: {name}. Supported: ravdess, iemocap, visec, anyf")
