@@ -253,7 +253,7 @@ class IEMOCAPHFDataset(Dataset):
             
         return spec_3ch # Returns [3, H, W] numpy array
 
-def get_hf_dataloaders(hf_id, batch_size=32, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None):
+def get_hf_dataloaders(hf_id, batch_size=32, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42):
     # Hugging Face datasets usually have 'train', 'validation', 'test' splits or just 'train'.
     # AbstractTTS/IEMOCAP structure: checking...
     # If standard splits exist:
@@ -288,7 +288,7 @@ def get_hf_dataloaders(hf_id, batch_size=32, num_workers=4, spec_augment_cfg=Non
              train_len = total_len - val_len
              
              # Random shuffle with seed
-             random.seed(42)
+             random.seed(seed)
              random.shuffle(full_indices)
              
              train_indices = full_indices[:train_len]

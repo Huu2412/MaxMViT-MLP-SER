@@ -6,6 +6,9 @@ import time
 import os
 import logging
 import warnings
+import numpy as np
+from sklearn.metrics import classification_report, recall_score, f1_score
+
 
 # Suppress librosa n_fft warnings
 warnings.filterwarnings('ignore', message='n_fft=.*is too large for input signal')
@@ -211,6 +214,7 @@ def train(config_path):
 
     # Final Rename
     logging.info("Renaming Top Checkpoints...")
+    rank1_filename = None
     for i, ckpt in enumerate(top_k_checkpoints):
         rank = i + 1
         new_name = f"rank{rank}_acc{ckpt['acc']:.2f}_loss{ckpt['loss']:.4f}_epoch{ckpt['epoch']}.pth"
@@ -218,6 +222,107 @@ def train(config_path):
         if os.path.exists(ckpt['path']):
             os.rename(ckpt['path'], new_path)
             logging.info(f"Saved Rank {rank}: {new_name}")
+            if rank == 1:
+                rank1_filename = new_name
+                
+    if rank1_filename:
+        # Load best model and run benchmarks
+        rank1_path = os.path.join(ckpt_dir, rank1_filename)
+        logging.info(f"Running full evaluation on best checkpoint: {rank1_filename}")
+        
+        # Load weights into model
+        state_dict = torch.load(rank1_path, map_location=DEVICE)
+        model.load_state_dict(state_dict)
+        
+        # Calculate parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+        # Calculate FLOPs
+        flops_str = "N/A"
+        try:
+            import thop
+            cqt_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+            mel_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+            flops_raw, _ = thop.profile(model, inputs=(cqt_dummy, mel_dummy), verbose=False)
+            flops_str = f"{flops_raw / 1e9:.2f} GFLOPs ({flops_raw:,})"
+        except Exception as e:
+            logging.warning(f"Could not calculate FLOPs: {e}")
+            
+        # Measure inference time and generate predictions
+        model.eval()
+        all_preds = []
+        all_labels = []
+        total_time = 0.0
+        num_samples_timed = 0
+        with torch.no_grad():
+            # Warmup
+            cqt_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+            mel_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+            for _ in range(5):
+                _ = model(cqt_dummy, mel_dummy)
+                
+            for cqt, mel, label in val_loader:
+                cqt, mel = cqt.to(DEVICE), mel.to(DEVICE)
+                start_t = time.time()
+                outputs = model(cqt, mel)
+                total_time += time.time() - start_t
+                
+                _, predicted = outputs.max(1)
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(label.numpy())
+                num_samples_timed += cqt.size(0)
+                
+        inf_time_sample = (total_time / num_samples_timed) * 1000.0 if num_samples_timed > 0 else 0.0
+        batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else 8
+        inf_time_batch = inf_time_sample * batch_size
+        
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        
+        # Calculate UA/UWA, mF1, F1 (weighted)
+        ua = 100.0 * recall_score(all_labels, all_preds, average='macro', zero_division=0)
+        mf1 = 100.0 * f1_score(all_labels, all_preds, average='macro', zero_division=0)
+        weighted_f1 = 100.0 * f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+        
+        # Class names
+        class_names = getattr(val_loader.dataset, 'target_classes', None)
+        if class_names is None:
+            class_names = [f"Class {i}" for i in range(num_classes)]
+            
+        report = classification_report(all_labels, all_preds, target_names=class_names, digits=4, zero_division=0)
+        
+        # Save evaluation report to txt file
+        report_filename = rank1_filename.replace(".pth", "_report.txt")
+        report_path = os.path.join(ckpt_dir, report_filename)
+        
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(f"Checkpoint: {rank1_path}\n")
+            f.write(f"Config: {config_path}\n")
+            f.write(f"Validation Accuracy: {top_k_checkpoints[0]['acc']:.2f}%\n")
+            f.write("="*60 + "\n")
+            f.write("Classification Report:\n")
+            f.write(report)
+            f.write("\n" + "="*60 + "\n")
+            f.write("BENCHMARKS & ADDED METRICS:\n")
+            f.write(f"Total Parameters: {total_params / 1e6:.2f}M ({total_params:,})\n")
+            f.write(f"Trainable Parameters: {trainable_params / 1e6:.2f}M ({trainable_params:,})\n")
+            f.write(f"Total FLOPs (per sample): {flops_str}\n")
+            f.write(f"Inference Time per batch (size {batch_size}): {inf_time_batch:.2f} ms\n")
+            f.write(f"Inference Time per sample: {inf_time_sample:.2f} ms\n")
+            f.write("-"*60 + "\n")
+            f.write(f"Unweighted Accuracy (UA/UWA): {ua:.2f}%\n")
+            f.write(f"Macro F1-score (mF1): {mf1:.2f}%\n")
+            f.write(f"Weighted F1-score (F1): {weighted_f1:.2f}%\n")
+            f.write("F1-score per class:\n")
+            f1_per_class = f1_score(all_labels, all_preds, average=None, zero_division=0)
+            for i, name in enumerate(class_names):
+                if i < len(f1_per_class):
+                    f.write(f"  - {name}: {f1_per_class[i]*100.0:.2f}%\n")
+                    
+        logging.info(f"Saved evaluation benchmarks report to: {report_path}")
+        logging.info(f"Benchmarks:\nUA/UWA: {ua:.2f}%, mF1: {mf1:.2f}%, F1: {weighted_f1:.2f}%, FLOPs: {flops_str}, Inf time: {inf_time_sample:.2f} ms/sample")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

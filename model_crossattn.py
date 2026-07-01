@@ -294,12 +294,9 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
         # Path 2: Mel-STFT → MViTv2
         self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
         
-        # Get feature dimensions via dummy forward pass
-        with torch.no_grad():
-            dummy = torch.randn(1, 3, 224, 224)
-            dim_cqt = self.maxvit(dummy).shape[1]
-            dim_mel = self.mvitv2(dummy).shape[1]
-            
+        # Get feature dimensions (fixed at 768 for both base backbones)
+        dim_cqt = 768
+        dim_mel = 768
         print(f"Feature dims - CQT/MaxViT: {dim_cqt}, Mel/MViTv2: {dim_mel}")
         
         # --- Cross-Attention Fusion ---

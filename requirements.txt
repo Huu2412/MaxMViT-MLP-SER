@@ -8,3 +8,4 @@ numpy
 PyYAML
 tabulate
 datasets
+thop

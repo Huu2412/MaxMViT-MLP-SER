@@ -225,7 +225,7 @@ class RAVDESSHFDataset(Dataset):
             
         return spec_3ch
 
-def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None):
+def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42):
     try:
         full_ds = RAVDESSHFDataset(
             hf_id, 
@@ -242,7 +242,7 @@ def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_worke
         train_len = total - val_len
         
         # Ensure reproducibility
-        random.seed(42) 
+        random.seed(seed) 
         random.shuffle(full_indices)
         
         train_indices = full_indices[:train_len]

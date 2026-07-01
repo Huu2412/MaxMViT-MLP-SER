@@ -116,12 +116,9 @@ class MaxMViT_MLP_GMU(nn.Module):
         # Path 2: Mel-STFT → MViTv2
         self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
         
-        # Get feature dimensions
-        with torch.no_grad():
-            dummy = torch.randn(1, 3, 224, 224)
-            dim_cqt = self.maxvit(dummy).shape[1]   # MaxViT output dim
-            dim_mel = self.mvitv2(dummy).shape[1]   # MViTv2 output dim
-            
+        # Get feature dimensions (fixed at 768 for both base backbones)
+        dim_cqt = 768
+        dim_mel = 768
         print(f"Feature dims - CQT/MaxViT: {dim_cqt}, Mel/MViTv2: {dim_mel}")
         
         # --- GMU Fusion (NEW) ---

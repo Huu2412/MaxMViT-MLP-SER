@@ -22,7 +22,11 @@ def get_dataloaders(config):
     pitch_shift_cfg = ds_config.get('args', {}).get('pitch_shift', None)
     time_shift_cfg = ds_config.get('args', {}).get('time_shift', None)
 
-    logging.info(f"Factory initializing dataset: {name}")
+    # Extract seed from training config (default to 42)
+    train_cfg = config.get('training', {})
+    seed = train_cfg.get('seed', 42)
+
+    logging.info(f"Factory initializing dataset: {name} with split seed: {seed}")
 
     if name == 'ravdess':
         # RAVDESS defaults
@@ -33,7 +37,8 @@ def get_dataloaders(config):
             num_workers=num_workers,
             spec_augment_cfg=spec_augment_cfg,
             pitch_shift_cfg=pitch_shift_cfg,
-            time_shift_cfg=time_shift_cfg
+            time_shift_cfg=time_shift_cfg,
+            seed=seed
         )
     
     elif name == 'iemocap':
@@ -45,7 +50,8 @@ def get_dataloaders(config):
             num_workers=num_workers,
             spec_augment_cfg=spec_augment_cfg,
             pitch_shift_cfg=pitch_shift_cfg,
-            time_shift_cfg=time_shift_cfg
+            time_shift_cfg=time_shift_cfg,
+            seed=seed
         )
     
     elif name in ['visec', 'anyf']:
@@ -57,7 +63,8 @@ def get_dataloaders(config):
             num_workers=num_workers, 
             spec_augment_cfg=spec_augment_cfg,
             pitch_shift_cfg=pitch_shift_cfg,
-            time_shift_cfg=time_shift_cfg
+            time_shift_cfg=time_shift_cfg,
+            seed=seed
         )
     
     else:

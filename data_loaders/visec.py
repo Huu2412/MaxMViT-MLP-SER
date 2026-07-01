@@ -204,7 +204,7 @@ class ViSECDataset(Dataset):
         
         return spec
 
-def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None):
+def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42):
     try:
         dataset = ViSECDataset(
             hf_id, 
@@ -220,7 +220,7 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
         train_len = total_len - val_len
         
         # Set seed to ensure reproducible train/val splits
-        rng = random.Random(42)
+        rng = random.Random(seed)
         rng.shuffle(full_indices)
         
         train_indices = full_indices[:train_len]

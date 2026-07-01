@@ -5,20 +5,20 @@ dataset:
   name: "visec"
   args:
     hf_id: "hustep-lab/ViSEC"
-    batch_size: 16
+    batch_size: 8
     num_workers: 4
-    target_size: [244, 244] # Paper Size
+    target_size: [224, 224] # Paper Size
     spec_augment:
       freq_mask_param: 27   # Max frequency mask width (F in paper)
-      time_mask_param: 100  # Max time mask width (T in paper)
+      time_mask_param: 30  # Max time mask width (T in paper)
       num_freq_masks: 1     # Number of frequency masks
       num_time_masks: 1     # Number of time masks
       prob: 0.5             # Probability of applying SpecAugment (50%)
     pitch_shift:
-      prob: 0.5             # Probability of applying pitch shift
+      prob: 0.0             # Probability of applying pitch shift
       n_steps_range: [-2.0, 2.0] # Pitch shift range in semitones
     time_shift:
-      prob: 0.5             # Probability of applying time shift
+      prob: 0.0             # Probability of applying time shift
       range: [0.9, 1.1]     # Time stretch rate range
 
 model:
@@ -34,7 +34,7 @@ model:
 
 training:
   epochs: 50
-  lr: 0.0002 # Paper value (CRITICAL: 0.02)
+  lr: 0.00015 # Paper value (CRITICAL: 0.02)
   patience: 10
   seed: 42
   device: "cuda"

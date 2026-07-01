@@ -30,15 +30,9 @@ class MaxMViT_MLP(nn.Module):
         # Print config to verify window sizes if possible, or just the model name
         print(f"Initialized MaxViT: {self.maxvit.default_cfg['architecture']}")
         
-        # Calculate feature dimension
-        # We need to do a dummy forward pass or check config to know output dim.
-        # Typically: MaxViT Small ~768, MViTv2 Small ~768 (checking needed)
-        with torch.no_grad():
-            # Use 224 for feature dim calc because we interpolate to 224 before backbone
-            dummy_input = torch.randn(1, 3, 224, 224) 
-            maxvit_dim = self.maxvit(dummy_input).shape[1]
-            mvitv2_dim = self.mvitv2(dummy_input).shape[1]
-            
+        # Calculate feature dimension (fixed at 768 for both base backbones)
+        maxvit_dim = 768
+        mvitv2_dim = 768
         fusion_dim = maxvit_dim + mvitv2_dim
         
         # --- MLP Head ---
