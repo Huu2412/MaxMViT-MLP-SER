@@ -22,6 +22,21 @@ def get_dataloaders(config):
     pitch_shift_cfg = ds_config.get('args', {}).get('pitch_shift', None)
     time_shift_cfg = ds_config.get('args', {}).get('time_shift', None)
 
+    # A single probability P for all augmentations (p or augment_prob)
+    augment_prob = ds_config.get('args', {}).get('augment_prob', ds_config.get('args', {}).get('p', 0.5))
+
+    if spec_augment_cfg is not None:
+        spec_augment_cfg = dict(spec_augment_cfg)
+        spec_augment_cfg['prob'] = augment_prob
+
+    if pitch_shift_cfg is not None:
+        pitch_shift_cfg = dict(pitch_shift_cfg)
+        pitch_shift_cfg['prob'] = 1.0  # Mark as enabled
+
+    if time_shift_cfg is not None:
+        time_shift_cfg = dict(time_shift_cfg)
+        time_shift_cfg['prob'] = 1.0  # Mark as enabled
+
     # Extract seed from training config (default to 42)
     train_cfg = config.get('training', {})
     seed = train_cfg.get('seed', 42)

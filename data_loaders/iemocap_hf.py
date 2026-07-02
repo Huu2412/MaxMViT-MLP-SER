@@ -140,10 +140,13 @@ class IEMOCAPHFDataset(Dataset):
         if y.ndim > 1:
             y = np.mean(y, axis=0) # Convert stereo to mono
 
+        # Determine whether to apply data augmentation (shared probability p = spec_augment_prob)
+        apply_aug = self.augment and (random.random() < self.spec_augment_prob)
+
         # Waveform Augmentations (Pitch Shift and Time Shift/Stretch)
-        if self.augment:
+        if apply_aug:
             # Time shift/stretch
-            if self.time_shift_prob > 0 and random.random() < self.time_shift_prob:
+            if self.time_shift_prob > 0:
                 if self.use_time_stretch:
                     rate = random.uniform(self.time_shift_range[0], self.time_shift_range[1])
                     y = librosa.effects.time_stretch(y, rate=rate)
@@ -152,7 +155,7 @@ class IEMOCAPHFDataset(Dataset):
                     y = np.roll(y, shift_amt)
             
             # Pitch shift
-            if self.pitch_shift_prob > 0 and random.random() < self.pitch_shift_prob:
+            if self.pitch_shift_prob > 0:
                 n_steps = random.uniform(self.pitch_shift_range[0], self.pitch_shift_range[1])
                 y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
 
@@ -184,8 +187,8 @@ class IEMOCAPHFDataset(Dataset):
                 mel_delta = np.zeros_like(mel_db)
                 mel_delta2 = np.zeros_like(mel_db)
             
-            # Apply SpecAugment before resize (training only) based on probability
-            if self.augment and random.random() < self.spec_augment_prob:
+            # Apply SpecAugment before resize (training only) based on the shared decision
+            if apply_aug:
                 cqt_db = self._spec_augment(cqt_db)
                 mel_db = self._spec_augment(mel_db)
                 mel_delta = self._spec_augment(mel_delta)
