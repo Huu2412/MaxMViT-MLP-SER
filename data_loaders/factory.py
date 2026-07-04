@@ -26,7 +26,13 @@ def get_dataloaders(config):
     train_cfg = config.get('training', {})
     seed = train_cfg.get('seed', 42)
 
+    # Auxiliary task config (Region Recognition)
+    aux_cfg = config.get('auxiliary_task', {})
+    load_accent = aux_cfg.get('enabled', False) and aux_cfg.get('task', '') == 'accent'
+
     logging.info(f"Factory initializing dataset: {name} with split seed: {seed}")
+    if load_accent:
+        logging.info("Auxiliary task: Accent/Region Recognition ENABLED")
 
     if name == 'ravdess':
         # RAVDESS defaults
@@ -64,7 +70,8 @@ def get_dataloaders(config):
             spec_augment_cfg=spec_augment_cfg,
             pitch_shift_cfg=pitch_shift_cfg,
             time_shift_cfg=time_shift_cfg,
-            seed=seed
+            seed=seed,
+            load_accent=load_accent
         )
     
     else:

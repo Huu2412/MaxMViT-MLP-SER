@@ -1,5 +1,4 @@
-
-experiment_name: "visec_baseline_4class"
+experiment_name: "visec_gmu_rr"
 
 dataset:
   name: "visec"
@@ -10,7 +9,7 @@ dataset:
     target_size: [224, 224] # Paper Size
     spec_augment:
       freq_mask_param: 27   # Max frequency mask width (F in paper)
-      time_mask_param: 30  # Max time mask width (T in paper)
+      time_mask_param: 30   # Max time mask width (T in paper)
       num_freq_masks: 1     # Number of frequency masks
       num_time_masks: 1     # Number of time masks
       prob: 0.5             # Probability of applying SpecAugment (50%)
@@ -31,6 +30,13 @@ model:
   num_heads: 8
   fusion_type: "concat"  # Options: concat, add, gated
 
+# Auxiliary Task: Region Recognition (RR)
+auxiliary_task:
+  enabled: true
+  task: "accent"
+  num_accent_classes: 3              # north, south, mid
+  alpha: 0.3                         # Weight for auxiliary loss: L = L_emo + alpha * L_accent
+  accent_weights: [0.20, 0.56, 2.24] # Weighted CE: [north=68.5%, south=25.3%, mid=6.27%]
 
 training:
   epochs: 50
@@ -42,7 +48,7 @@ training:
     factor: 0.1
     patience: 3
     min_lr: 1e-6
-  
+
 paths:
   log_dir: "logs"
   checkpoint_dir: "checkpoints"

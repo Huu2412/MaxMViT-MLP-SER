@@ -10,7 +10,7 @@ import random
 import copy
 
 class ViSECDataset(Dataset):
-    def __init__(self, hf_id="hustep-lab/ViSEC", split="train", target_classes=['happy', 'neutral', 'sad', 'angry'], sr=44100, target_size=(244, 244), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None):
+    def __init__(self, hf_id="hustep-lab/ViSEC", split="train", target_classes=['happy', 'neutral', 'sad', 'angry'], sr=44100, target_size=(244, 244), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, load_accent=False):
         """
         Dataset class for ViSEC from Hugging Face.
         
@@ -30,6 +30,11 @@ class ViSECDataset(Dataset):
         self.target_classes = target_classes
         self.class_map = {c: i for i, c in enumerate(target_classes)}
         self.augment = augment
+        
+        # Accent/Region Recognition
+        self.load_accent = load_accent
+        self.accent_map = {'north': 0, 'south': 1, 'mid': 2}
+        self.num_accent_classes = len(self.accent_map)
         
         # SpecAugment parameters
         _cfg = spec_augment_cfg or {}
@@ -73,15 +78,26 @@ class ViSECDataset(Dataset):
         for idx, item in enumerate(self.ds):
             emo = item.get('emotion')
             if emo in self.target_classes:
-                self.indices.append((idx, self.class_map[emo]))
+                # Get accent label if available
+                accent_label = -1  # Default: unknown/missing
+                if self.load_accent:
+                    accent_str = item.get('accent', None)
+                    if accent_str and accent_str in self.accent_map:
+                        accent_label = self.accent_map[accent_str]
+                self.indices.append((idx, self.class_map[emo], accent_label))
                 
         print(f"Filtered {len(self.indices)} samples from {len(self.ds)} total.")
+        if self.load_accent:
+            accent_counts = {}
+            for _, _, acc in self.indices:
+                accent_counts[acc] = accent_counts.get(acc, 0) + 1
+            print(f"Accent distribution: {accent_counts}")
 
     def __len__(self):
         return len(self.indices)
     
     def __getitem__(self, idx):
-        ds_idx, label = self.indices[idx]
+        ds_idx, label, accent_label = self.indices[idx]
         item = self.ds[ds_idx]
         
         audio_bytes = item['path']['bytes']
@@ -150,10 +166,14 @@ class ViSECDataset(Dataset):
             cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)
             mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
             
+            if self.load_accent:
+                return cqt_tensor, mel_tensor, torch.tensor(label, dtype=torch.long), torch.tensor(accent_label, dtype=torch.long)
             return cqt_tensor, mel_tensor, torch.tensor(label, dtype=torch.long)
         except Exception as e:
             print(f"Error processing audio sample {ds_idx}: {e}")
             dummy_img = torch.zeros((3, self.target_size[0], self.target_size[1]), dtype=torch.float32)
+            if self.load_accent:
+                return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long), torch.tensor(accent_label, dtype=torch.long)
             return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long)
             
     def _resize_normalize(self, spec):
@@ -204,13 +224,14 @@ class ViSECDataset(Dataset):
         
         return spec
 
-def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42):
+def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False):
     try:
         dataset = ViSECDataset(
             hf_id, 
             spec_augment_cfg=spec_augment_cfg, 
             pitch_shift_cfg=pitch_shift_cfg, 
-            time_shift_cfg=time_shift_cfg
+            time_shift_cfg=time_shift_cfg,
+            load_accent=load_accent
         )
         
         # Split indices

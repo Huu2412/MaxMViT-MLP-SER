@@ -99,13 +99,14 @@ class MaxMViT_MLP_GMU(nn.Module):
     """
     
     def __init__(self, num_classes=7, hidden_size=512, dropout_rate=0.2, 
-                 fusion_hidden_dim=None):
+                 fusion_hidden_dim=None, num_accent_classes=0):
         """
         Args:
             num_classes: Number of emotion classes
             hidden_size: MLP hidden layer size (paper: 512)
             dropout_rate: Dropout rate (paper: 0.2)
             fusion_hidden_dim: GMU hidden dimension (None = auto)
+            num_accent_classes: Number of accent/region classes (0 = disabled)
         """
         super().__init__()
         
@@ -131,15 +132,24 @@ class MaxMViT_MLP_GMU(nn.Module):
             hidden_dim=fusion_hidden_dim
         )
         
-        # --- MLP Head ---
-        # Input is now fusion_hidden_dim instead of dim_cqt + dim_mel
-        self.mlp = nn.Sequential(
+        # --- MLP Shared Feature Extractor ---
+        self.mlp_shared = nn.Sequential(
             nn.Linear(fusion_hidden_dim, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(hidden_size, num_classes)
         )
+        
+        # --- Emotion Classification Head (Primary Task) ---
+        self.emotion_head = nn.Linear(hidden_size, num_classes)
+        
+        # --- Accent/Region Classification Head (Auxiliary Task) ---
+        self.num_accent_classes = num_accent_classes
+        if num_accent_classes > 0:
+            self.accent_head = nn.Linear(hidden_size, num_accent_classes)
+            print(f"Accent head enabled: {num_accent_classes} classes")
+        else:
+            self.accent_head = None
         
         # Store for analysis
         self.fusion_hidden_dim = fusion_hidden_dim
@@ -152,8 +162,9 @@ class MaxMViT_MLP_GMU(nn.Module):
             return_gate: If True, also return gate values for analysis
             
         Returns:
-            logits: [B, num_classes]
-            gate_values (optional): [B, hidden_dim] - shows modality importance
+            emotion_logits: [B, num_classes]
+            accent_logits (if accent_head exists): [B, num_accent_classes]
+            gate_values (if return_gate): [B, hidden_dim]
         """
         # Expand to 3 channels if needed
         if cqt.size(1) == 1:
@@ -174,12 +185,23 @@ class MaxMViT_MLP_GMU(nn.Module):
         # GMU Fusion (instead of simple concatenation)
         fused, gate_values = self.gmu(feat_mel, feat_cqt)  # [B, fusion_hidden_dim]
         
-        # Classification
-        logits = self.mlp(fused)
+        # Shared feature extraction
+        shared_features = self.mlp_shared(fused)  # [B, hidden_size]
+        
+        # Emotion classification (primary task)
+        emotion_logits = self.emotion_head(shared_features)
+        
+        # Accent classification (auxiliary task)
+        accent_logits = None
+        if self.accent_head is not None:
+            accent_logits = self.accent_head(shared_features)
         
         if return_gate:
-            return logits, gate_values
-        return logits
+            return emotion_logits, accent_logits, gate_values
+        
+        if accent_logits is not None:
+            return emotion_logits, accent_logits
+        return emotion_logits
 
 
 class MaxMViT_MLP_GMU_Contrastive(MaxMViT_MLP_GMU):
@@ -347,12 +369,17 @@ def get_optimizer_gmu(model, lr=0.02):
     Optimizers following paper specifications:
     - MaxViT: Adam (lr=0.02)
     - MViTv2: RAdam (lr=0.02)  
-    - GMU + MLP: Adam
+    - GMU + MLP + Heads: Adam
     """
     maxvit_params = list(model.maxvit.parameters())
     mvitv2_params = list(model.mvitv2.parameters())
     gmu_params = list(model.gmu.parameters())
-    mlp_params = list(model.mlp.parameters())
+    mlp_params = list(model.mlp_shared.parameters())
+    head_params = list(model.emotion_head.parameters())
+    
+    # Accent head params (if exists)
+    if model.accent_head is not None:
+        head_params += list(model.accent_head.parameters())
     
     # Optional: contrastive projection params
     other_params = []
@@ -360,9 +387,9 @@ def get_optimizer_gmu(model, lr=0.02):
         other_params += list(model.proj_cqt.parameters())
         other_params += list(model.proj_mel.parameters())
     
-    # Optimizer 1: MaxViT + GMU + MLP + projections → Adam
+    # Optimizer 1: MaxViT + GMU + MLP + Heads + projections → Adam
     opt1 = torch.optim.Adam(
-        maxvit_params + gmu_params + mlp_params + other_params, 
+        maxvit_params + gmu_params + mlp_params + head_params + other_params, 
         lr=lr
     )
     

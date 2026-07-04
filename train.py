@@ -46,11 +46,13 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
     elif model_type == 'gmu':
         logging.info("Using GMU Model (Gated Multimodal Unit Fusion)")
         fusion_hidden_dim = model_cfg.get('fusion_hidden_dim', None)
+        num_accent_classes = model_cfg.get('num_accent_classes', 0)
         model = MaxMViT_MLP_GMU(
             num_classes=num_classes, 
             hidden_size=hidden_size, 
             dropout_rate=dropout_rate,
-            fusion_hidden_dim=fusion_hidden_dim
+            fusion_hidden_dim=fusion_hidden_dim,
+            num_accent_classes=num_accent_classes
         )
         optimizers = get_optimizer_gmu(model, lr=lr)
         
@@ -100,7 +102,20 @@ def train(config_path):
     # 4. Model - Select based on config
     num_classes = model_cfg.get('num_classes', 4)
     model_type = model_cfg.get('type', 'crossattn')  # Default to crossattn
+    
+    # Auxiliary task config (Region Recognition)
+    aux_cfg = config.get('auxiliary_task', {})
+    aux_enabled = aux_cfg.get('enabled', False)
+    aux_alpha = aux_cfg.get('alpha', 0.3)
+    num_accent_classes = aux_cfg.get('num_accent_classes', 0) if aux_enabled else 0
+    
+    # Pass num_accent_classes to model config
+    if num_accent_classes > 0:
+        model_cfg['num_accent_classes'] = num_accent_classes
+    
     logging.info(f"Initializing Model with {num_classes} classes...")
+    if aux_enabled:
+        logging.info(f"Auxiliary Task: Region Recognition ({num_accent_classes} accent classes, alpha={aux_alpha})")
     
     model, optimizers = get_model_and_optimizer(model_type, num_classes, LR, model_cfg)
     model.to(DEVICE)
@@ -116,6 +131,17 @@ def train(config_path):
     
     criterion = nn.CrossEntropyLoss()
     
+    # Auxiliary task loss (Weighted CrossEntropy for accent)
+    criterion_accent = None
+    if aux_enabled and num_accent_classes > 0:
+        accent_weights_list = aux_cfg.get('accent_weights', None)
+        if accent_weights_list:
+            accent_weights = torch.tensor(accent_weights_list, dtype=torch.float).to(DEVICE)
+            criterion_accent = nn.CrossEntropyLoss(weight=accent_weights, ignore_index=-1)
+        else:
+            criterion_accent = nn.CrossEntropyLoss(ignore_index=-1)
+        logging.info(f"Accent loss: Weighted CrossEntropy (weights={accent_weights_list})")
+    
     # 6. Training Loop
     logging.info("Starting Training...")
     best_val_acc = 0.0
@@ -126,17 +152,46 @@ def train(config_path):
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0
+        total_loss_emo = 0
+        total_loss_acc = 0
         correct = 0
         total = 0
         start_time = time.time()
         
-        for batch_idx, (cqt, mel, label) in enumerate(train_loader):
+        for batch_idx, batch in enumerate(train_loader):
+            # Handle both 3-element and 4-element batches
+            if len(batch) == 4:
+                cqt, mel, label, accent_label = batch
+                accent_label = accent_label.to(DEVICE)
+            else:
+                cqt, mel, label = batch
+                accent_label = None
             cqt, mel, label = cqt.to(DEVICE), mel.to(DEVICE), label.to(DEVICE)
             
             for opt in optimizers: opt.zero_grad()
             
-            outputs = model(cqt, mel)
-            loss = criterion(outputs, label)
+            # Forward pass
+            model_output = model(cqt, mel)
+            if isinstance(model_output, tuple):
+                outputs, accent_logits = model_output
+            else:
+                outputs = model_output
+                accent_logits = None
+            
+            # Primary loss (Emotion)
+            loss_emo = criterion(outputs, label)
+            loss = loss_emo
+            
+            # Auxiliary loss (Accent) 
+            loss_acc_value = 0.0
+            if criterion_accent is not None and accent_logits is not None and accent_label is not None:
+                # Only compute accent loss for samples with valid accent labels
+                valid_mask = accent_label != -1
+                if valid_mask.any():
+                    loss_acc = criterion_accent(accent_logits[valid_mask], accent_label[valid_mask])
+                    loss = loss_emo + aux_alpha * loss_acc
+                    loss_acc_value = loss_acc.item()
+            
             loss.backward()
             
             # Clip Gradients
@@ -145,11 +200,13 @@ def train(config_path):
             for opt in optimizers: opt.step()
             
             total_loss += loss.item()
+            total_loss_emo += loss_emo.item()
+            total_loss_acc += loss_acc_value
             _, predicted = outputs.max(1)
             total += label.size(0)
             correct += predicted.eq(label).sum().item()
             
-            # Log every 10 batches (optional)
+            # Log every 20 batches (optional)
             if batch_idx % 20 == 0:
                  logging.debug(f"Batch {batch_idx}: Loss {loss.item():.4f}")
 
@@ -164,9 +221,19 @@ def train(config_path):
         if val_loader:
             model.eval()
             with torch.no_grad():
-                for cqt, mel, label in val_loader:
+                for batch in val_loader:
+                    if len(batch) == 4:
+                        cqt, mel, label, _ = batch  # Ignore accent label in validation
+                    else:
+                        cqt, mel, label = batch
                     cqt, mel, label = cqt.to(DEVICE), mel.to(DEVICE), label.to(DEVICE)
-                    outputs = model(cqt, mel)
+                    
+                    model_output = model(cqt, mel)
+                    if isinstance(model_output, tuple):
+                        outputs, _ = model_output
+                    else:
+                        outputs = model_output
+                    
                     loss = criterion(outputs, label)
                     val_loss += loss.item()
                     _, predicted = outputs.max(1)
@@ -184,7 +251,12 @@ def train(config_path):
 
         # Logging
         epoch_time = time.time() - start_time
-        logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}%] | Time: {epoch_time:.1f}s")
+        if criterion_accent is not None:
+            avg_loss_emo = total_loss_emo / len(train_loader)
+            avg_loss_acc = total_loss_acc / len(train_loader)
+            logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} L_emo:{avg_loss_emo:.4f} L_acc:{avg_loss_acc:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}%] | Time: {epoch_time:.1f}s")
+        else:
+            logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}%] | Time: {epoch_time:.1f}s")
         
         # Checkpointing Strategy (Top-K)
         filename = f"epoch_{epoch+1}.pth"
@@ -262,11 +334,20 @@ def train(config_path):
             for _ in range(5):
                 _ = model(cqt_dummy, mel_dummy)
                 
-            for cqt, mel, label in val_loader:
+            for batch in val_loader:
+                if len(batch) == 4:
+                    cqt, mel, label, _ = batch
+                else:
+                    cqt, mel, label = batch
                 cqt, mel = cqt.to(DEVICE), mel.to(DEVICE)
                 start_t = time.time()
-                outputs = model(cqt, mel)
+                model_output = model(cqt, mel)
                 total_time += time.time() - start_t
+                
+                if isinstance(model_output, tuple):
+                    outputs, _ = model_output
+                else:
+                    outputs = model_output
                 
                 _, predicted = outputs.max(1)
                 all_preds.extend(predicted.cpu().numpy())
