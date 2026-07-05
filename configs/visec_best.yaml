@@ -13,12 +13,17 @@ dataset:
       num_freq_masks: 1
       num_time_masks: 1
       prob: 0.5
-    pitch_shift:
-      prob: 1.0                     # Always run pitch shift (to match bug behavior)
-      n_steps_range: [-1.0, 1.0]    # Range is [-1.0, 1.0]
-    time_shift:
-      prob: 1.0                     # Always run time shift (to match bug behavior)
-      range: [0.9, 1.1]
+    waveform_augment:
+      prob: 0.6                       # Xác suất kích hoạt cả khối (Probability of Pipeline)
+      pitch_shift:
+        weight: 0.4                   # Trọng số 40%
+        n_steps_range: [-1.0, 1.0]    # Dịch cao độ [-1.0, 1.0] semitones
+      noise_injection:
+        weight: 0.4                   # Trọng số 40%
+        noise_factor_range: [0.001, 0.015] # Nhiễu trắng
+      time_shift:
+        weight: 0.2                   # Trọng số 20%
+        range: [0.9, 1.1]             # Tốc độ [0.9, 1.1]
 
 model:
   name: "maxmvit_mlp"

@@ -11,7 +11,7 @@ import copy
 import os
 
 class ViSECDataset(Dataset):
-    def __init__(self, hf_id="hustep-lab/ViSEC", split="train", target_classes=['happy', 'neutral', 'sad', 'angry'], sr=44100, target_size=(244, 244), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, load_accent=False, csv_path=None):
+    def __init__(self, hf_id="hustep-lab/ViSEC", split="train", target_classes=['happy', 'neutral', 'sad', 'angry'], sr=44100, target_size=(244, 244), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, load_accent=False, csv_path=None, waveform_augment_cfg=None):
         """
         Dataset class for ViSEC from Hugging Face or Local Preprocessed WAVs.
         
@@ -26,6 +26,7 @@ class ViSECDataset(Dataset):
             pitch_shift_cfg (dict): Pitch shift config.
             time_shift_cfg (dict): Time shift config.
             csv_path (str): Path to local preprocessed CSV metadata.
+            waveform_augment_cfg (dict): OneOf waveform augmentation config.
         """
         self.sr = sr
         self.target_size = target_size
@@ -45,8 +46,8 @@ class ViSECDataset(Dataset):
         self.num_freq_masks = _cfg.get('num_freq_masks', 1)
         self.num_time_masks = _cfg.get('num_time_masks', 1)
         self.spec_augment_prob = _cfg.get('prob', 0.5)  # Default: 50% probability
-
-        # Waveform augmentation configs
+ 
+        # Waveform augmentation configs (old style fallback)
         _pitch_cfg = pitch_shift_cfg or {}
         self.pitch_shift_prob = _pitch_cfg.get('prob', 0.0)
         self.pitch_shift_range = _pitch_cfg.get('n_steps_range', [-2.0, 2.0])
@@ -62,6 +63,35 @@ class ViSECDataset(Dataset):
         else:
             self.time_shift_range = [0.9, 1.1]
             self.use_time_stretch = True
+            
+        # OneOf Waveform Augmentation (new style)
+        self.waveform_augment_cfg = waveform_augment_cfg
+        if waveform_augment_cfg is not None:
+            self.use_oneof_augment = True
+            self.waveform_augment_prob = waveform_augment_cfg.get('prob', 0.6)
+            
+            _pitch = waveform_augment_cfg.get('pitch_shift', {})
+            _noise = waveform_augment_cfg.get('noise_injection', {})
+            _time = waveform_augment_cfg.get('time_shift', {})
+            
+            # Normalize internal weights
+            self.pitch_weight = _pitch.get('weight', 0.4)
+            self.noise_weight = _noise.get('weight', 0.4)
+            self.time_weight = _time.get('weight', 0.2)
+            
+            total_w = self.pitch_weight + self.noise_weight + self.time_weight
+            if total_w > 0:
+                self.pitch_weight /= total_w
+                self.noise_weight /= total_w
+                self.time_weight /= total_w
+            else:
+                self.pitch_weight, self.noise_weight, self.time_weight = 0.4, 0.4, 0.2
+                
+            self.pitch_shift_range = _pitch.get('n_steps_range', [-1.0, 1.0])
+            self.noise_factor_range = _noise.get('noise_factor_range', [0.001, 0.015])
+            self.time_shift_range = _time.get('range', [0.9, 1.1])
+        else:
+            self.use_oneof_augment = False
         
         # Normalization params (ImageNet)
         self.mean = np.array([0.485, 0.456, 0.406])
@@ -135,21 +165,40 @@ class ViSECDataset(Dataset):
             if y.ndim > 1:
                 y = np.mean(y, axis=0)
                 
-            # Waveform Augmentations (Pitch Shift and Time Shift/Stretch)
+            # Waveform Augmentations
             if self.augment:
-                # Time shift/stretch
-                if self.time_shift_prob > 0 and random.random() < self.time_shift_prob:
-                    if self.use_time_stretch:
-                        rate = random.uniform(self.time_shift_range[0], self.time_shift_range[1])
-                        y = librosa.effects.time_stretch(y, rate=rate)
-                    else:
-                        shift_amt = int(random.uniform(-self.time_shift_limit, self.time_shift_limit) * len(y))
-                        y = np.roll(y, shift_amt)
-                
-                # Pitch shift
-                if self.pitch_shift_prob > 0 and random.random() < self.pitch_shift_prob:
-                    n_steps = random.uniform(self.pitch_shift_range[0], self.pitch_shift_range[1])
-                    y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
+                if getattr(self, 'use_oneof_augment', False):
+                    # Cụm 1: OneOf Waveform Augmentation
+                    if random.random() < self.waveform_augment_prob:
+                        r = random.random()
+                        if r < self.pitch_weight:
+                            # Pitch shift
+                            n_steps = random.uniform(self.pitch_shift_range[0], self.pitch_shift_range[1])
+                            y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
+                        elif r < self.pitch_weight + self.noise_weight:
+                            # Noise injection
+                            noise_factor = random.uniform(self.noise_factor_range[0], self.noise_factor_range[1])
+                            noise = np.random.normal(0, 1, len(y))
+                            y = y + noise_factor * noise
+                        else:
+                            # Time shift/stretch
+                            rate = random.uniform(self.time_shift_range[0], self.time_shift_range[1])
+                            y = librosa.effects.time_stretch(y, rate=rate)
+                else:
+                    # Old style fallback (Independent)
+                    # Time shift/stretch
+                    if self.time_shift_prob > 0 and random.random() < self.time_shift_prob:
+                        if self.use_time_stretch:
+                            rate = random.uniform(self.time_shift_range[0], self.time_shift_range[1])
+                            y = librosa.effects.time_stretch(y, rate=rate)
+                        else:
+                            shift_amt = int(random.uniform(-self.time_shift_limit, self.time_shift_limit) * len(y))
+                            y = np.roll(y, shift_amt)
+                    
+                    # Pitch shift
+                    if self.pitch_shift_prob > 0 and random.random() < self.pitch_shift_prob:
+                        n_steps = random.uniform(self.pitch_shift_range[0], self.pitch_shift_range[1])
+                        y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
 
         if len(y) < self.n_fft:
             padding = self.n_fft - len(y) + 1
@@ -246,7 +295,7 @@ class ViSECDataset(Dataset):
         
         return spec
 
-def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False):
+def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None):
     try:
         local_train_csv = os.path.join("visec_dataset", "train.csv")
         local_val_csv = os.path.join("visec_dataset", "val.csv")
@@ -260,7 +309,8 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
                 time_shift_cfg=time_shift_cfg,
                 load_accent=load_accent,
                 csv_path=local_train_csv,
-                augment=True
+                augment=True,
+                waveform_augment_cfg=waveform_augment_cfg
             )
             val_ds = ViSECDataset(
                 hf_id=hf_id,
@@ -269,16 +319,18 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
                 time_shift_cfg=time_shift_cfg,
                 load_accent=load_accent,
                 csv_path=local_val_csv,
-                augment=False
+                augment=False,
+                waveform_augment_cfg=waveform_augment_cfg
             )
             print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
         else:
             dataset = ViSECDataset(
-                hf_id, 
+                hf_id=hf_id, 
                 spec_augment_cfg=spec_augment_cfg, 
                 pitch_shift_cfg=pitch_shift_cfg, 
                 time_shift_cfg=time_shift_cfg,
-                load_accent=load_accent
+                load_accent=load_accent,
+                waveform_augment_cfg=waveform_augment_cfg
             )
             
             # Split indices

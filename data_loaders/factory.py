@@ -21,6 +21,7 @@ def get_dataloaders(config):
     spec_augment_cfg = ds_config.get('args', {}).get('spec_augment', None)
     pitch_shift_cfg = ds_config.get('args', {}).get('pitch_shift', None)
     time_shift_cfg = ds_config.get('args', {}).get('time_shift', None)
+    waveform_augment_cfg = ds_config.get('args', {}).get('waveform_augment', None)
 
     # Extract seed from training config (default to 42)
     train_cfg = config.get('training', {})
@@ -71,7 +72,8 @@ def get_dataloaders(config):
             pitch_shift_cfg=pitch_shift_cfg,
             time_shift_cfg=time_shift_cfg,
             seed=seed,
-            load_accent=load_accent
+            load_accent=load_accent,
+            waveform_augment_cfg=waveform_augment_cfg
         )
     
     else:
