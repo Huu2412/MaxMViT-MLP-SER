@@ -99,6 +99,41 @@ def train(config_path):
         logging.error("Failed to load data.")
         return
 
+    # Log augmentation configs
+    ds_args = config.get('dataset', {}).get('args', {})
+    logging.info("--- Data Augmentation Settings ---")
+    for aug_name in ['spec_augment', 'pitch_shift', 'time_shift']:
+        aug_cfg = ds_args.get(aug_name, None)
+        if aug_cfg:
+            logging.info(f"  {aug_name}: {aug_cfg}")
+        else:
+            logging.info(f"  {aug_name}: Disabled")
+    logging.info("----------------------------------")
+
+    # Log accent distribution if applicable
+    if train_loader.dataset and len(train_loader.dataset.indices) > 0:
+        first_index = train_loader.dataset.indices[0]
+        if len(first_index) == 3:
+            accent_map = getattr(train_loader.dataset, 'accent_map', {'north': 0, 'south': 1, 'mid': 2})
+            rev_accent_map = {v: k for k, v in accent_map.items()}
+            
+            # Train distribution
+            train_accents = [idx_tuple[2] for idx_tuple in train_loader.dataset.indices]
+            train_counts = {}
+            for acc in train_accents:
+                train_counts[acc] = train_counts.get(acc, 0) + 1
+            train_dist_str = ", ".join([f"{rev_accent_map.get(k, f'class_{k}')}: {v} ({v/len(train_accents)*100:.2f}%)" for k, v in sorted(train_counts.items())])
+            logging.info(f"Train accent distribution: {train_dist_str}")
+            
+            # Val distribution
+            if val_loader:
+                val_accents = [idx_tuple[2] for idx_tuple in val_loader.dataset.indices]
+                val_counts = {}
+                for acc in val_accents:
+                    val_counts[acc] = val_counts.get(acc, 0) + 1
+                val_dist_str = ", ".join([f"{rev_accent_map.get(k, f'class_{k}')}: {v} ({v/len(val_accents)*100:.2f}%)" for k, v in sorted(val_counts.items())])
+                logging.info(f"Val accent distribution: {val_dist_str}")
+
     # 4. Model - Select based on config
     num_classes = model_cfg.get('num_classes', 4)
     model_type = model_cfg.get('type', 'crossattn')  # Default to crossattn
@@ -140,7 +175,8 @@ def train(config_path):
             criterion_accent = nn.CrossEntropyLoss(weight=accent_weights, ignore_index=-1)
         else:
             criterion_accent = nn.CrossEntropyLoss(ignore_index=-1)
-        logging.info(f"Accent loss: Weighted CrossEntropy (weights={accent_weights_list})")
+        logging.info(f"Accent auxiliary task configured: alpha={aux_alpha}")
+        logging.info(f"Accent loss weights: {accent_weights_list}")
     
     # 6. Training Loop
     logging.info("Starting Training...")
