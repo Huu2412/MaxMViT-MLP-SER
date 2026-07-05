@@ -102,12 +102,20 @@ def train(config_path):
     # Log augmentation configs
     ds_args = config.get('dataset', {}).get('args', {})
     logging.info("--- Data Augmentation Settings ---")
-    for aug_name in ['spec_augment', 'pitch_shift', 'time_shift']:
-        aug_cfg = ds_args.get(aug_name, None)
-        if aug_cfg:
-            logging.info(f"  {aug_name}: {aug_cfg}")
-        else:
-            logging.info(f"  {aug_name}: Disabled")
+    waveform_cfg = ds_args.get('waveform_augment', None)
+    spec_cfg = ds_args.get('spec_augment', None)
+    
+    if waveform_cfg:
+        logging.info(f"  waveform_augment (OneOf): {waveform_cfg}")
+        if spec_cfg:
+            logging.info(f"  spec_augment: {spec_cfg}")
+    else:
+        for aug_name in ['spec_augment', 'pitch_shift', 'time_shift']:
+            aug_cfg = ds_args.get(aug_name, None)
+            if aug_cfg:
+                logging.info(f"  {aug_name}: {aug_cfg}")
+            else:
+                logging.info(f"  {aug_name}: Disabled")
     logging.info("----------------------------------")
 
     # Log accent distribution if applicable
