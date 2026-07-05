@@ -8,11 +8,12 @@ import io
 import soundfile as sf
 import random
 import copy
+import os
 
 class ViSECDataset(Dataset):
-    def __init__(self, hf_id="hustep-lab/ViSEC", split="train", target_classes=['happy', 'neutral', 'sad', 'angry'], sr=44100, target_size=(244, 244), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, load_accent=False):
+    def __init__(self, hf_id="hustep-lab/ViSEC", split="train", target_classes=['happy', 'neutral', 'sad', 'angry'], sr=44100, target_size=(244, 244), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, load_accent=False, csv_path=None):
         """
-        Dataset class for ViSEC from Hugging Face.
+        Dataset class for ViSEC from Hugging Face or Local Preprocessed WAVs.
         
         Args:
             hf_id (str): Hugging Face dataset ID.
@@ -24,6 +25,7 @@ class ViSECDataset(Dataset):
             spec_augment_cfg (dict): SpecAugment config.
             pitch_shift_cfg (dict): Pitch shift config.
             time_shift_cfg (dict): Time shift config.
+            csv_path (str): Path to local preprocessed CSV metadata.
         """
         self.sr = sr
         self.target_size = target_size
@@ -61,11 +63,6 @@ class ViSECDataset(Dataset):
             self.time_shift_range = [0.9, 1.1]
             self.use_time_stretch = True
         
-        print(f"Loading {hf_id}...")
-        # Disable auto-decoding to avoid torchcodec issues
-        from datasets import Audio
-        self.ds = load_dataset(hf_id, split="train").cast_column("path", Audio(decode=False))
-        
         # Normalization params (ImageNet)
         self.mean = np.array([0.485, 0.456, 0.406])
         self.std = np.array([0.229, 0.224, 0.225])
@@ -75,18 +72,36 @@ class ViSECDataset(Dataset):
         self.hop_length = 256
         
         self.indices = []
-        for idx, item in enumerate(self.ds):
-            emo = item.get('emotion')
-            if emo in self.target_classes:
-                # Get accent label if available
-                accent_label = -1  # Default: unknown/missing
-                if self.load_accent:
-                    accent_str = item.get('accent', None)
-                    if accent_str and accent_str in self.accent_map:
-                        accent_label = self.accent_map[accent_str]
+        self.csv_path = csv_path
+        
+        if csv_path is not None and os.path.exists(csv_path):
+            import pandas as pd
+            print(f"Loading local dataset metadata from {csv_path}...")
+            self.is_local = True
+            self.df = pd.read_csv(csv_path)
+            for idx, row in self.df.iterrows():
+                emo = row['emotion']
+                accent_label = int(row['accent'])
                 self.indices.append((idx, self.class_map[emo], accent_label))
+        else:
+            self.is_local = False
+            print(f"Loading {hf_id}...")
+            # Disable auto-decoding to avoid torchcodec issues
+            from datasets import Audio
+            self.ds = load_dataset(hf_id, split="train").cast_column("path", Audio(decode=False))
+            
+            for idx, item in enumerate(self.ds):
+                emo = item.get('emotion')
+                if emo in self.target_classes:
+                    # Get accent label if available
+                    accent_label = -1  # Default: unknown/missing
+                    if self.load_accent:
+                        accent_str = item.get('accent', None)
+                        if accent_str and accent_str in self.accent_map:
+                            accent_label = self.accent_map[accent_str]
+                    self.indices.append((idx, self.class_map[emo], accent_label))
                 
-        print(f"Filtered {len(self.indices)} samples from {len(self.ds)} total.")
+        print(f"Filtered {len(self.indices)} samples.")
         if self.load_accent:
             accent_counts = {}
             for _, _, acc in self.indices:
@@ -98,36 +113,43 @@ class ViSECDataset(Dataset):
     
     def __getitem__(self, idx):
         ds_idx, label, accent_label = self.indices[idx]
-        item = self.ds[ds_idx]
         
-        audio_bytes = item['path']['bytes']
-        
-        y, orig_sr = sf.read(io.BytesIO(audio_bytes))
-        
-        if orig_sr != self.sr:
+        if getattr(self, 'is_local', False):
+            # Load from preprocessed WAV file path
+            file_path = self.df.iloc[ds_idx]['file_path']
+            y, orig_sr = sf.read(file_path)
             y = y.astype(np.float32)
-            y = librosa.resample(y, orig_sr=orig_sr, target_sr=self.sr)
         else:
-            y = y.astype(np.float32)
+            # Fallback to Hugging Face
+            item = self.ds[ds_idx]
+            audio_bytes = item['path']['bytes']
             
-        if y.ndim > 1:
-            y = np.mean(y, axis=0)
+            y, orig_sr = sf.read(io.BytesIO(audio_bytes))
             
-        # Waveform Augmentations (Pitch Shift and Time Shift/Stretch)
-        if self.augment:
-            # Time shift/stretch
-            if self.time_shift_prob > 0 and random.random() < self.time_shift_prob:
-                if self.use_time_stretch:
-                    rate = random.uniform(self.time_shift_range[0], self.time_shift_range[1])
-                    y = librosa.effects.time_stretch(y, rate=rate)
-                else:
-                    shift_amt = int(random.uniform(-self.time_shift_limit, self.time_shift_limit) * len(y))
-                    y = np.roll(y, shift_amt)
-            
-            # Pitch shift
-            if self.pitch_shift_prob > 0 and random.random() < self.pitch_shift_prob:
-                n_steps = random.uniform(self.pitch_shift_range[0], self.pitch_shift_range[1])
-                y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
+            if orig_sr != self.sr:
+                y = y.astype(np.float32)
+                y = librosa.resample(y, orig_sr=orig_sr, target_sr=self.sr)
+            else:
+                y = y.astype(np.float32)
+                
+            if y.ndim > 1:
+                y = np.mean(y, axis=0)
+                
+            # Waveform Augmentations (Pitch Shift and Time Shift/Stretch)
+            if self.augment:
+                # Time shift/stretch
+                if self.time_shift_prob > 0 and random.random() < self.time_shift_prob:
+                    if self.use_time_stretch:
+                        rate = random.uniform(self.time_shift_range[0], self.time_shift_range[1])
+                        y = librosa.effects.time_stretch(y, rate=rate)
+                    else:
+                        shift_amt = int(random.uniform(-self.time_shift_limit, self.time_shift_limit) * len(y))
+                        y = np.roll(y, shift_amt)
+                
+                # Pitch shift
+                if self.pitch_shift_prob > 0 and random.random() < self.pitch_shift_prob:
+                    n_steps = random.uniform(self.pitch_shift_range[0], self.pitch_shift_range[1])
+                    y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
 
         if len(y) < self.n_fft:
             padding = self.n_fft - len(y) + 1
@@ -226,36 +248,61 @@ class ViSECDataset(Dataset):
 
 def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False):
     try:
-        dataset = ViSECDataset(
-            hf_id, 
-            spec_augment_cfg=spec_augment_cfg, 
-            pitch_shift_cfg=pitch_shift_cfg, 
-            time_shift_cfg=time_shift_cfg,
-            load_accent=load_accent
-        )
+        local_train_csv = os.path.join("visec_dataset", "train.csv")
+        local_val_csv = os.path.join("visec_dataset", "val.csv")
         
-        # Split indices
-        full_indices = dataset.indices
-        total_len = len(full_indices)
-        val_len = int(total_len * 0.2)
-        train_len = total_len - val_len
-        
-        # Set seed to ensure reproducible train/val splits
-        rng = random.Random(seed)
-        rng.shuffle(full_indices)
-        
-        train_indices = full_indices[:train_len]
-        val_indices = full_indices[train_len:]
-        
-        train_ds = copy.deepcopy(dataset)
-        train_ds.indices = train_indices
-        train_ds.augment = True  # Enable SpecAugment and Waveform augmentations for training
-        
-        val_ds = copy.deepcopy(dataset)
-        val_ds.indices = val_indices
-        val_ds.augment = False  # No augment for validation
-        
-        print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
+        if os.path.exists(local_train_csv) and os.path.exists(local_val_csv):
+            print(f"Loading local preprocessed datasets from {local_train_csv} and {local_val_csv}...")
+            train_ds = ViSECDataset(
+                hf_id=hf_id,
+                spec_augment_cfg=spec_augment_cfg,
+                pitch_shift_cfg=pitch_shift_cfg,
+                time_shift_cfg=time_shift_cfg,
+                load_accent=load_accent,
+                csv_path=local_train_csv,
+                augment=True
+            )
+            val_ds = ViSECDataset(
+                hf_id=hf_id,
+                spec_augment_cfg=spec_augment_cfg,
+                pitch_shift_cfg=pitch_shift_cfg,
+                time_shift_cfg=time_shift_cfg,
+                load_accent=load_accent,
+                csv_path=local_val_csv,
+                augment=False
+            )
+            print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
+        else:
+            dataset = ViSECDataset(
+                hf_id, 
+                spec_augment_cfg=spec_augment_cfg, 
+                pitch_shift_cfg=pitch_shift_cfg, 
+                time_shift_cfg=time_shift_cfg,
+                load_accent=load_accent
+            )
+            
+            # Split indices
+            full_indices = dataset.indices
+            total_len = len(full_indices)
+            val_len = int(total_len * 0.2)
+            train_len = total_len - val_len
+            
+            # Set seed to ensure reproducible train/val splits
+            rng = random.Random(seed)
+            rng.shuffle(full_indices)
+            
+            train_indices = full_indices[:train_len]
+            val_indices = full_indices[train_len:]
+            
+            train_ds = copy.deepcopy(dataset)
+            train_ds.indices = train_indices
+            train_ds.augment = True  # Enable SpecAugment and Waveform augmentations for training
+            
+            val_ds = copy.deepcopy(dataset)
+            val_ds.indices = val_indices
+            val_ds.augment = False  # No augment for validation
+            
+            print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
         
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
