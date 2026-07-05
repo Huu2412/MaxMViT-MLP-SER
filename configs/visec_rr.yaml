@@ -35,7 +35,7 @@ auxiliary_task:
   enabled: true
   task: "accent"
   num_accent_classes: 3              # north, south, mid
-  alpha: 0.3                         # Weight for auxiliary loss: L = L_emo + alpha * L_accent
+  alpha: 0.8                         # Weight for auxiliary loss: L = L_emo + alpha * L_accent
   accent_weights: [0.20, 0.56, 2.24] # Weighted CE: [north=68.5%, south=25.3%, mid=6.27%]
 
 training:
