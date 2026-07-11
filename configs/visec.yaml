@@ -21,7 +21,7 @@ dataset:
         n_steps_range: [-1.0, 1.0]    # Dịch cao độ [-1.0, 1.0] semitones
       noise_injection:
         weight: 0.4                   # Trọng số 40%
-        noise_factor_range: [0.005, 0.02] # Nhiễu trắng
+        noise_factor_range: [0.001, 0.015] # Nhiễu trắng
       time_shift:
         weight: 0.2                   # Trọng số 20%
         range: [0.9, 1.1]             # Tốc độ [0.9, 1.1]
@@ -44,8 +44,8 @@ training:
   seed: 42
   device: "cuda"
   scheduler:
-    factor: 0.1
-    patience: 3
+    factor: 0.5
+    patience: 5
     min_lr: 1e-6
   
 paths:

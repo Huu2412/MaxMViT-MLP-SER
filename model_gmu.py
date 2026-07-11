@@ -135,7 +135,7 @@ class MaxMViT_MLP_GMU(nn.Module):
         # --- MLP Shared Feature Extractor ---
         self.mlp_shared = nn.Sequential(
             nn.Linear(fusion_hidden_dim, hidden_size),
-            nn.BatchNorm1d(hidden_size),
+            nn.LayerNorm(hidden_size),   # LayerNorm: ổn định với batch_size nhỏ (thay BatchNorm1d)
             nn.ReLU(),
             nn.Dropout(dropout_rate),
         )
