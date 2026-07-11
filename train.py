@@ -197,7 +197,7 @@ def train(config_path):
     model.to(DEVICE)
 
     # AMP GradScaler (no-op / disabled gracefully when USE_AMP=False)
-    scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP)
+    scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
 
     sched_cfg = train_cfg.get('scheduler', {})
     scheduler_type = sched_cfg.get('type', 'plateau')
