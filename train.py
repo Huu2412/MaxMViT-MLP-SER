@@ -266,7 +266,7 @@ def train(config_path):
             for opt in optimizers: opt.zero_grad()
             
             # Forward pass (autocast is a no-op when USE_AMP=False)
-            with torch.cuda.amp.autocast(enabled=USE_AMP):
+            with torch.amp.autocast('cuda', enabled=USE_AMP):
                 model_output = model(cqt, mel)
                 if isinstance(model_output, tuple):
                     outputs, accent_logits = model_output
@@ -290,11 +290,10 @@ def train(config_path):
 
             scaler.scale(loss).backward()
 
-            # Unscale before clipping so max_norm is applied to real gradients
+            # Unscale once for ALL optimizers before clipping, then step each
             for opt in optimizers:
                 scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP_NORM)
-
             for opt in optimizers:
                 scaler.step(opt)
             scaler.update()
@@ -330,7 +329,7 @@ def train(config_path):
                         cqt, mel, label = batch
                     cqt, mel, label = cqt.to(DEVICE), mel.to(DEVICE), label.to(DEVICE)
                     
-                    with torch.cuda.amp.autocast(enabled=USE_AMP):
+                    with torch.amp.autocast('cuda', enabled=USE_AMP):
                         model_output = model(cqt, mel)
                         if isinstance(model_output, tuple):
                             outputs, _ = model_output

@@ -13,7 +13,7 @@ dataset:
   name: "visec"
   args:
     hf_id: "hustep-lab/ViSEC"
-    batch_size: 16                 # was 8: more stable BatchNorm/LayerNorm statistics
+    batch_size: 8                  # Kaggle GPU memory limit (OOM with 16 → NaN loss)
     num_workers: 4
     target_size: [224, 224]        # was [244,244]: model always interpolates to 224 anyway,
                                     # so requesting 224 directly skips a wasted resize step
@@ -65,10 +65,10 @@ training:
 
   # --- Regularization / imbalance handling (NEW) ---
   label_smoothing: 0.1
-  class_weight: true               # inverse-frequency weighting for the 4 emotion classes
+  class_weight: false              # disable until baseline stable (weight=NaN risk on first run)
 
   # --- Efficiency (NEW) ---
-  amp: true                        # mixed precision: faster + less VRAM, no accuracy cost
+  amp: false                       # DISABLED: float16 overflow → NaN loss on Kaggle T4/P100
 
   grad_clip_norm: 1.0
   patience: 10
