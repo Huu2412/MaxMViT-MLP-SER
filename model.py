@@ -7,8 +7,11 @@ import numpy as np
 import cv2
 import os
 
+from utils import freeze_backbone_layers
+
 class MaxMViT_MLP(nn.Module):
-    def __init__(self, num_classes=7, hidden_size=512, dropout_rate=0.2):
+    def __init__(self, num_classes=7, hidden_size=512, dropout_rate=0.2,
+                 freeze_backbone=False, unfreeze_last_n_blocks=0):
         """
         MaxMViT and MViTv2 Fusion Network with Multilayer Perceptron (MaxMViT-MLP).
         
@@ -16,6 +19,11 @@ class MaxMViT_MLP(nn.Module):
             num_classes (int): Number of emotion classes (e.g., 7 for Emo-DB).
             hidden_size (int): Number of hidden nodes in MLP (default 512).
             dropout_rate (float): Dropout rate (default 0.2).
+            freeze_backbone (bool): If True, freeze MaxViT/MViTv2 backbones
+                (except the last `unfreeze_last_n_blocks` stages) to reduce
+                overfitting on small datasets like ViSEC.
+            unfreeze_last_n_blocks (int): Number of trailing backbone stages
+                to keep trainable when freeze_backbone=True.
         """
         super(MaxMViT_MLP, self).__init__()
         
@@ -29,6 +37,16 @@ class MaxMViT_MLP(nn.Module):
 
         # Print config to verify window sizes if possible, or just the model name
         print(f"Initialized MaxViT: {self.maxvit.default_cfg['architecture']}")
+
+        # Optionally freeze backbones (transfer-learning regularization)
+        self.freeze_backbone = freeze_backbone
+        if freeze_backbone:
+            f1, t1 = freeze_backbone_layers(self.maxvit, unfreeze_last_n_blocks)
+            f2, t2 = freeze_backbone_layers(self.mvitv2, unfreeze_last_n_blocks)
+            print(f"Froze MaxViT backbone: {f1/1e6:.1f}M frozen / {t1/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
+            print(f"Froze MViTv2 backbone: {f2/1e6:.1f}M frozen / {t2/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
         
         # Calculate feature dimension (fixed at 768 for both base backbones)
         maxvit_dim = 768
@@ -99,22 +117,40 @@ class MaxMViT_MLP(nn.Module):
         
         return logits
 
-def get_optimizer(model, lr=0.02):
+def get_optimizer(model, lr=0.02, backbone_lr=None, head_lr=None):
     """
-    Returns the optimizers as specified in the paper:
-    - MaxViT: Adam
-    - MViTv2: RAdam
-    - MLP: Assuming Adam (matches MaxViT or dominant)
+    Returns the optimizers, with support for discriminative learning rates:
+    - MaxViT backbone: Adam @ backbone_lr (low, since it's pretrained)
+    - MViTv2 backbone: RAdam @ backbone_lr
+    - MLP head (randomly initialized): Adam @ head_lr (higher)
+
+    If backbone_lr/head_lr are not provided, both fall back to `lr`
+    (reproduces the original paper-style behaviour of one shared LR).
+
+    Only parameters with requires_grad=True are included, so this plays
+    nicely with freeze_backbone=True.
     """
-    # Split parameters
-    maxvit_params = list(model.maxvit.parameters())
-    mvitv2_params = list(model.mvitv2.parameters())
-    mlp_params = list(model.mlp.parameters())
-    
-    # Optimizer 1: MaxViT (and let's put MLP here too) -> Adam
-    optimizer1 = torch.optim.Adam(maxvit_params + mlp_params, lr=lr)
-    
-    # Optimizer 2: MViTv2 -> RAdam
-    optimizer2 = torch.optim.RAdam(mvitv2_params, lr=lr)
-    
-    return [optimizer1, optimizer2] 
+    backbone_lr = lr if backbone_lr is None else backbone_lr
+    head_lr = lr if head_lr is None else head_lr
+
+    # Split parameters, only keep trainable ones
+    maxvit_params = [p for p in model.maxvit.parameters() if p.requires_grad]
+    mvitv2_params = [p for p in model.mvitv2.parameters() if p.requires_grad]
+    mlp_params = [p for p in model.mlp.parameters() if p.requires_grad]
+
+    optimizers = []
+
+    # Optimizer 1: MaxViT backbone + MLP head, different LR groups -> Adam
+    param_groups = []
+    if maxvit_params:
+        param_groups.append({'params': maxvit_params, 'lr': backbone_lr})
+    if mlp_params:
+        param_groups.append({'params': mlp_params, 'lr': head_lr})
+    if param_groups:
+        optimizers.append(torch.optim.Adam(param_groups))
+
+    # Optimizer 2: MViTv2 backbone -> RAdam
+    if mvitv2_params:
+        optimizers.append(torch.optim.RAdam(mvitv2_params, lr=backbone_lr))
+
+    return optimizers
