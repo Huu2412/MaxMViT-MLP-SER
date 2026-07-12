@@ -60,8 +60,8 @@ training:
   lr: 0.0002                       # fallback LR if backbone_lr/head_lr are unset
 
   # --- Discriminative learning rates (NEW) ---
-  backbone_lr: 0.00002             # low LR for pretrained MaxViT/MViTv2 (fine-tuning only)
-  head_lr: 0.0005                  # higher LR for randomly-initialized fusion + MLP head
+  backbone_lr: 0.000014             # low LR for pretrained MaxViT/MViTv2 (fine-tuning only)
+  head_lr: 0.00035                  # higher LR for randomly-initialized fusion + MLP head
 
   # --- Regularization / imbalance handling (NEW) ---
   label_smoothing: 0.1
@@ -83,6 +83,7 @@ training:
     type: "cosine"                 # was ReduceLROnPlateau: smoother decay, works well
                                     # for ViT fine-tuning with few steps/epoch on small data
     min_lr: 1e-6
+    warmup_epochs: 3
 
 paths:
   log_dir: "logs"

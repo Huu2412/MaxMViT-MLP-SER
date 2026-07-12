@@ -202,11 +202,17 @@ def train(config_path):
     sched_cfg = train_cfg.get('scheduler', {})
     scheduler_type = sched_cfg.get('type', 'plateau')
     if scheduler_type == 'cosine':
-        schedulers = [torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt, T_max=EPOCHS, eta_min=float(sched_cfg.get('min_lr', 1e-6))
-        ) for opt in optimizers]
+        warmup_epochs = sched_cfg.get('warmup_epochs', 0)
+        schedulers = []
+        for opt in optimizers:
+            if warmup_epochs > 0:
+                warmup_scheduler = torch.optim.lr_scheduler.LinearLR(opt, start_factor=0.01, total_iters=warmup_epochs)
+                cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS - warmup_epochs, eta_min=float(sched_cfg.get('min_lr', 1e-6)))
+                schedulers.append(torch.optim.lr_scheduler.SequentialLR(opt, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs]))
+            else:
+                schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=float(sched_cfg.get('min_lr', 1e-6))))
         SCHEDULER_STEPS_ON_METRIC = False
-        logging.info(f"Using CosineAnnealingLR scheduler (T_max={EPOCHS})")
+        logging.info(f"Using CosineAnnealingLR scheduler (T_max={EPOCHS}, Warmup={warmup_epochs})")
     else:
         schedulers = [torch.optim.lr_scheduler.ReduceLROnPlateau(
             opt, mode='min', 
