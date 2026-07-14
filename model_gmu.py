@@ -118,12 +118,36 @@ class MaxMViT_MLP_GMU(nn.Module):
         """
         super().__init__()
         
-        # --- Backbone: Same as original ---
         # Path 1: CQT → MaxViT
-        self.maxvit = timm.create_model('maxvit_base_tf_224', pretrained=True, num_classes=0)
+        import os
+        local_maxvit = "local_data/maxvit.safetensors"
+        if os.path.exists(local_maxvit):
+            print(f"Loading bypass MaxViT weights from {local_maxvit}...")
+            self.maxvit = timm.create_model('maxvit_base_tf_224', pretrained=False, num_classes=0)
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(local_maxvit)
+                self.maxvit.load_state_dict(state_dict, strict=False)
+            except Exception as e:
+                print(f"Failed to load safetensors: {e}")
+                self.maxvit = timm.create_model('maxvit_base_tf_224', pretrained=True, num_classes=0)
+        else:
+            self.maxvit = timm.create_model('maxvit_base_tf_224', pretrained=True, num_classes=0)
         
         # Path 2: Mel-STFT → MViTv2
-        self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
+        local_mvit = "local_data/mvitv2.safetensors"
+        if os.path.exists(local_mvit):
+            print(f"Loading bypass MViTv2 weights from {local_mvit}...")
+            self.mvitv2 = timm.create_model('mvitv2_base', pretrained=False, num_classes=0)
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(local_mvit)
+                self.mvitv2.load_state_dict(state_dict, strict=False)
+            except Exception as e:
+                print(f"Failed to load safetensors: {e}")
+                self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
+        else:
+            self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
         
         # Get feature dimensions (fixed at 768 for both base backbones)
         dim_cqt = 768
