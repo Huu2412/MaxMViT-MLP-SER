@@ -120,15 +120,16 @@ class ViSECDataset(Dataset):
             from datasets import Audio
             self.ds = load_dataset(hf_id, split="train").cast_column("path", Audio(decode=False))
             
-            for idx, item in enumerate(self.ds):
-                emo = item.get('emotion')
+            emotions = self.ds['emotion']
+            has_accent = self.load_accent and 'accent' in self.ds.column_names
+            accents = self.ds['accent'] if has_accent else [None] * len(self.ds)
+            
+            for idx, (emo, accent_str) in enumerate(zip(emotions, accents)):
                 if emo in self.target_classes:
                     # Get accent label if available
                     accent_label = -1  # Default: unknown/missing
-                    if self.load_accent:
-                        accent_str = item.get('accent', None)
-                        if accent_str and accent_str in self.accent_map:
-                            accent_label = self.accent_map[accent_str]
+                    if has_accent and accent_str and accent_str in self.accent_map:
+                        accent_label = self.accent_map[accent_str]
                     self.indices.append((idx, self.class_map[emo], accent_label))
                 
         print(f"Filtered {len(self.indices)} samples.")
