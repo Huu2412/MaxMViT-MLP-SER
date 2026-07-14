@@ -55,16 +55,16 @@ model:
   unfreeze_last_n_blocks: 2        # only used when freeze_backbone: true
 
 training:
-  epochs: 60                       # was 50: cosine schedule below benefits from a
+  epochs: 30                       # was 50: cosine schedule below benefits from a
                                     # slightly longer, smoother decay
   lr: 0.0002                       # fallback LR if backbone_lr/head_lr are unset
 
   # --- Discriminative learning rates (NEW) ---
-  backbone_lr: 0.000014             # low LR for pretrained MaxViT/MViTv2 (fine-tuning only)
-  head_lr: 0.00035                  # higher LR for randomly-initialized fusion + MLP head
+  backbone_lr: 0.0001             # low LR for pretrained MaxViT/MViTv2 (fine-tuning only)
+  head_lr: 0.0005                  # higher LR for randomly-initialized fusion + MLP head
 
   # --- Regularization / imbalance handling (NEW) ---
-  label_smoothing: 0.1
+  label_smoothing: 0.0
   class_weight: false              # disable until baseline stable (weight=NaN risk on first run)
 
   # --- Efficiency (NEW) ---
