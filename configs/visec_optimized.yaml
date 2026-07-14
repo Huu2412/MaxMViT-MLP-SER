@@ -67,8 +67,7 @@ auxiliary_task:
   accent_weights: [0.20, 0.56, 2.24] # Weighted CE: [north=68.5%, south=25.3%, mid=6.27%]
 
 training:
-  epochs: 30                       # was 50: cosine schedule below benefits from a
-                                    # slightly longer, smoother decay
+  epochs: 50                       # was 30: increased per user request
   lr: 0.0002                       # fallback LR if backbone_lr/head_lr are unset
 
   # --- Discriminative learning rates (NEW) ---
