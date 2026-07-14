@@ -346,11 +346,11 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
             train_indices = full_indices[:train_len]
             val_indices = full_indices[train_len:]
             
-            train_ds = copy.deepcopy(dataset)
+            train_ds = copy.copy(dataset)
             train_ds.indices = train_indices
             train_ds.augment = True  # Enable SpecAugment and Waveform augmentations for training
             
-            val_ds = copy.deepcopy(dataset)
+            val_ds = copy.copy(dataset)
             val_ds.indices = val_indices
             val_ds.augment = False  # No augment for validation
             
