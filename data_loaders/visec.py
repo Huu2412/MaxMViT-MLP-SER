@@ -115,10 +115,15 @@ class ViSECDataset(Dataset):
                 self.indices.append((idx, self.class_map[emo], accent_label))
         else:
             self.is_local = False
-            print(f"Loading {hf_id}...")
-            # Disable auto-decoding to avoid torchcodec issues
-            from datasets import Audio
-            self.ds = load_dataset(hf_id, split="train").cast_column("path", Audio(decode=False))
+            from datasets import Audio, load_dataset
+            
+            local_parquet = "local_data/train.parquet"
+            if os.path.exists(local_parquet):
+                print(f"Loading bypass dataset from local parquet: {local_parquet}...")
+                self.ds = load_dataset("parquet", data_files=local_parquet, split="train").cast_column("path", Audio(decode=False))
+            else:
+                print(f"Loading {hf_id} from Hugging Face Hub...")
+                self.ds = load_dataset(hf_id, split="train").cast_column("path", Audio(decode=False))
             
             emotions = self.ds['emotion']
             has_accent = self.load_accent and 'accent' in self.ds.column_names
