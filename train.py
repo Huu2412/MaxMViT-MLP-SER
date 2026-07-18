@@ -89,8 +89,20 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
         )
         optimizers = get_optimizer_crossattn(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
         
+    elif model_type == 'maxvit_unimodal':
+        logging.info("Using MaxViT Unimodal Model with Self-Attention")
+        from model_unimodal import MaxViT_SelfAttn_MLP, get_optimizer_unimodal
+        model = MaxViT_SelfAttn_MLP(num_classes=num_classes)
+        optimizers = get_optimizer_unimodal(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
+        
+    elif model_type == 'mvitv2_unimodal':
+        logging.info("Using MViTv2 Unimodal Model with Self-Attention")
+        from model_unimodal import MViTv2_SelfAttn_MLP, get_optimizer_unimodal
+        model = MViTv2_SelfAttn_MLP(num_classes=num_classes)
+        optimizers = get_optimizer_unimodal(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
+        
     else:
-        raise ValueError(f"Unknown model_type: {model_type}. Choose from: original, gmu, crossattn")
+        raise ValueError(f"Unknown model_type: {model_type}. Choose from: original, gmu, crossattn, maxvit_unimodal, mvitv2_unimodal")
         
     return model, optimizers
 

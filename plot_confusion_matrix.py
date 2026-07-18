@@ -87,7 +87,7 @@ def main():
     print("Loading datasets...")
     # Use multiple workers for faster evaluation
     if 'dataset' in config and 'args' in config['dataset']:
-        config['dataset']['args']['num_workers'] = 4
+        config['dataset']['args']['num_workers'] = 0
     _, val_loader = get_dataloaders(config)
     
     if val_loader is None:
@@ -118,7 +118,8 @@ def main():
         
         num_batches = len(val_loader)
         with torch.no_grad():
-            for batch_idx, (cqt, mel, label) in enumerate(val_loader):
+            for batch_idx, batch in enumerate(val_loader):
+                cqt, mel, label = batch[0], batch[1], batch[2]
                 print(f"Processing batch {batch_idx + 1}/{num_batches}...")
                 cqt, mel = cqt.to(device), mel.to(device)
                 outputs = model(cqt, mel)
@@ -191,10 +192,10 @@ def main():
         for _ in range(5):
             _ = model(cqt_dummy, mel_dummy)
             
-        for idx, (cqt, mel, _) in enumerate(val_loader):
+        for idx, batch in enumerate(val_loader):
             if idx >= num_batches_to_time:
                 break
-            cqt, mel = cqt.to(device), mel.to(device)
+            cqt, mel = batch[0].to(device), batch[1].to(device)
             start_t = time.time()
             _ = model(cqt, mel)
             total_time += time.time() - start_t
@@ -269,7 +270,7 @@ def main():
         annot_kws={"size": 11, "weight": "bold"}
     )
     
-    plt.title(f"Confusion Matrix - {checkpoint_name}\nAccuracy: {acc:.2f}%", fontsize=14, pad=20)
+    plt.title(f"Confusion matrix of ViSec ViT-GMU\nAccuracy: {acc:.2f}%", fontsize=14, pad=20)
     plt.xlabel("Predicted Label", fontsize=12, labelpad=10)
     plt.ylabel("True Label", fontsize=12, labelpad=10)
     plt.xticks(rotation=45, ha='right')

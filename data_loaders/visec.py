@@ -238,7 +238,10 @@ class ViSECDataset(Dataset):
                 mel_delta2 = self._spec_augment(mel_delta2)
             
             cqt_img = self._resize_normalize(cqt_db)
-            mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
+            
+            # ABLATION: Thay vì dùng delta và delta-delta, ta copy mel_db thành 3 channels
+            # mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
+            mel_img = self._resize_normalize([mel_db, mel_db, mel_db])
             
             cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)
             mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
