@@ -49,6 +49,12 @@ class MaxViT_SelfAttn_MLP(nn.Module):
     def forward(self, cqt, mel=None):
         # cqt shape: [B, 3, 224, 224] (CQT input)
         # mel is ignored for this unimodal branch
+        
+        if cqt.size(1) == 1:
+            cqt = cqt.repeat(1, 3, 1, 1)
+        if cqt.shape[-1] != 224:
+            cqt = torch.nn.functional.interpolate(cqt, size=(224, 224), mode='bilinear', align_corners=False)
+
         # 1. Extract feature maps
         features = self.backbone.forward_features(cqt) # [B, 768, 7, 7]
         
@@ -88,6 +94,12 @@ class MViTv2_SelfAttn_MLP(nn.Module):
     def forward(self, cqt, mel):
         # mel shape: [B, 3, 224, 224] (Mel-STFT input)
         # cqt is ignored for this unimodal branch
+        
+        if mel.size(1) == 1:
+            mel = mel.repeat(1, 3, 1, 1)
+        if mel.shape[-1] != 224:
+            mel = torch.nn.functional.interpolate(mel, size=(224, 224), mode='bilinear', align_corners=False)
+
         # 1. Extract sequence features
         features = self.backbone.forward_features(mel) # [B, 49, 768]
         
