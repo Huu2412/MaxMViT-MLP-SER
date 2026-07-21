@@ -1,48 +1,84 @@
+﻿experiment_name: "ravdess_optimized"
 
-experiment_name: "ravdess_baseline_8class"
+# ============================================================================
+# Config for RAVDESS, mirroring visec_optimized structure:
+#   1. Better evaluation: checkpoint selection by macro-F1 + class-weighted loss
+#   2. Overfitting control: discriminative LR, higher dropout, label smoothing, AMP
+#   3. Fusion ablation left as a knob (model.type) to test after 1-2 are stable
+#   4. Augmentation / scheduler as the last, marginal-gain tuning step
+# ============================================================================
 
 dataset:
   name: "ravdess"
   args:
     hf_id: "TwinkStart/RAVDESS"
-    batch_size: 4
-    num_workers: 0
-    target_size: [244, 244] # Paper Size
+    batch_size: 8
+    num_workers: 4
+    target_size: [224, 224]        # was [244,244]: model always interpolates to 224 anyway,
+                                    # so requesting 224 directly skips a wasted resize step
     spec_augment:
-      freq_mask_param: 27   # Max frequency mask width
-      time_mask_param: 100  # Max time mask width
-      num_freq_masks: 1     # Number of frequency masks
-      num_time_masks: 1     # Number of time masks
-      prob: 0.5             # Probability of applying SpecAugment (50%)
-    pitch_shift:
-      prob: 0.5             # Probability of applying pitch shift
-      n_steps_range: [-2.0, 2.0] # Pitch shift range in semitones
-    time_shift:
-      prob: 0.5             # Probability of applying time shift
-      range: [0.9, 1.1]     # Time stretch rate range
+      freq_mask_param: 27
+      time_mask_param: 30          # was 100: middle ground, paired with 2 masks below
+      num_freq_masks: 1
+      num_time_masks: 2            # was 1: two smaller masks generalize better than one big one
+      prob: 0.5
+    waveform_augment:
+      prob: 0.7                    # slightly more augmentation for a small dataset
+      pitch_shift:
+        weight: 0.4
+        n_steps_range: [-1.0, 1.0]  # kept conservative: large pitch shifts risk
+                                     # changing the emotional meaning
+      noise_injection:
+        weight: 0.4
+        noise_factor_range: [0.001, 0.015]
+      time_shift:
+        weight: 0.2
+        range: [0.9, 1.1]
 
 model:
   name: "maxmvit_mlp"
-  type: "crossattn"  # Options: original, gmu, crossattn
+  type: "crossattn"              # options: original, gmu, crossattn -- ablate after
+                                  # steps 1-2 below are stable (see notes)
   num_classes: 8
   hidden_size: 512
-  dropout_rate: 0.2
-  # Cross-Attention specific
+  dropout_rate: 0.3              # was 0.2: extra regularization, ~170M params prone to overfitting
   num_heads: 8
-  fusion_type: "concat"  # Options: concat, add, gated
- 
+  fusion_type: "concat"          # try "gated" as a follow-up ablation
+
+  # --- Transfer-learning regularization ---
+  freeze_backbone: false
+  unfreeze_last_n_blocks: 2      # only used when freeze_backbone: true
+
 
 training:
   epochs: 50
-  lr: 0.0002 # Paper value (CRITICAL: 0.02)
+  lr: 0.0002                       # fallback LR if backbone_lr/head_lr are unset
+
+  # --- Discriminative learning rates ---
+  backbone_lr: 0.0001             # low LR for pretrained MaxViT/MViTv2 (fine-tuning only)
+  head_lr: 0.0005                  # higher LR for randomly-initialized fusion + MLP head
+
+  # --- Regularization / imbalance handling ---
+  label_smoothing: 0.0
+  class_weight: false              # disable until baseline stable (weight=NaN risk on first run)
+
+  # --- Efficiency ---
+  amp: false                       # DISABLED: float16 overflow -> NaN loss on Kaggle T4/P100
+
+  grad_clip_norm: 1.0
   patience: 10
   seed: 42
   device: "cuda"
+
+  # --- Checkpoint selection ---
+  checkpoint_metric: "macro_f1"   # robust to class imbalance in RAVDESS's 8-class labels
+
   scheduler:
-    factor: 0.1
-    patience: 3
+    type: "cosine"                 # was ReduceLROnPlateau: smoother decay, works well
+                                    # for ViT fine-tuning with few steps/epoch on small data
     min_lr: 1e-6
-  
+    warmup_epochs: 3
+
 paths:
   log_dir: "logs"
   checkpoint_dir: "checkpoints"
