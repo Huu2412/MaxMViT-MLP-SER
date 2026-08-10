@@ -265,3 +265,85 @@ def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_worke
     except Exception as e:
         print(f"RAVDESS load error: {e}")
         return None, None
+
+
+def get_ravdess_test_loader(
+    hf_id="TwinkStart/RAVDESS",
+    batch_size=16,
+    num_workers=4,
+    target_classes=None,
+    class_map=None
+):
+    """
+    Load RAVDESS as a test set, filtered to only the emotion classes
+    shared with ViSEC for cross-dataset generalization evaluation.
+
+    ViSEC label order: happy=0, neutral=1, sad=2, angry=3
+    RAVDESS raw labels: neutral, calm, happy, sad, angry, fearful, disgust, surprised
+
+    Args:
+        hf_id: Hugging Face dataset ID for RAVDESS
+        batch_size: Batch size for test loader
+        num_workers: Number of DataLoader workers
+        target_classes: List of shared class names (default: ViSEC 4-class order)
+        class_map: Dict mapping class name -> index (default: ViSEC mapping)
+
+    Returns:
+        DataLoader for RAVDESS test set (no augmentation)
+    """
+    # Default: match ViSEC label space exactly
+    if target_classes is None:
+        target_classes = ['happy', 'neutral', 'sad', 'angry']
+    if class_map is None:
+        class_map = {c: i for i, c in enumerate(target_classes)}
+
+    logging.info(f"Loading RAVDESS as cross-dataset test set from {hf_id}")
+    logging.info(f"Filtering to shared classes: {target_classes} → {class_map}")
+
+    try:
+        ds = RAVDESSHFDataset(
+            hf_id=hf_id,
+            split="ravdess_emo",
+            target_classes=target_classes,
+            augment=False  # No augmentation for test set
+        )
+
+        # Override class_map to use ViSEC label indices
+        ds.class_map = class_map
+        ds.target_classes = target_classes
+
+        # Re-filter with correct class_map
+        emo_map = {
+            'neutral': 'neutral',
+            'calm': 'calm',
+            'happy': 'happy',
+            'sad': 'sad',
+            'angry': 'angry',
+            'fearful': 'fear',
+            'disgust': 'disgust',
+            'surprised': 'surprise'
+        }
+        ds.indices = []
+        for idx, item in enumerate(ds.ds):
+            raw_emo = item.get('emotion', '')
+            if isinstance(raw_emo, str):
+                raw_emo = raw_emo.lower().strip()
+            short_emo = emo_map.get(raw_emo)
+            if short_emo in class_map:
+                ds.indices.append((idx, class_map[short_emo]))
+
+        logging.info(f"RAVDESS test set: {len(ds.indices)} samples across {len(target_classes)} classes")
+
+        # Log per-class distribution
+        from collections import Counter
+        rev_map = {v: k for k, v in class_map.items()}
+        counts = Counter(label for _, label in ds.indices)
+        dist_str = ", ".join(f"{rev_map[k]}: {v}" for k, v in sorted(counts.items()))
+        logging.info(f"RAVDESS class distribution: {dist_str}")
+
+        test_loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        return test_loader
+
+    except Exception as e:
+        logging.error(f"RAVDESS test loader error: {e}")
+        return None
