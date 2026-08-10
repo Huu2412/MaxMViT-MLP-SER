@@ -21,6 +21,8 @@ import torch.nn.functional as F
 import timm
 import math
 
+from utils import freeze_backbone_layers
+
 
 class CrossAttentionBlock(nn.Module):
     """
@@ -275,7 +277,9 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
     """
     
     def __init__(self, num_classes=4, hidden_size=512, dropout_rate=0.2,
-                 fusion_hidden_dim=None, num_heads=8, fusion_type='concat'):
+                 fusion_hidden_dim=None, num_heads=8, fusion_type='concat',
+                 num_accent_classes=0,
+                 freeze_backbone=False, unfreeze_last_n_blocks=0):
         """
         Args:
             num_classes: Number of emotion classes
@@ -284,6 +288,11 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
             fusion_hidden_dim: Cross-attention hidden dimension (None = auto)
             num_heads: Number of attention heads
             fusion_type: 'concat', 'add', or 'gated'
+            freeze_backbone: If True, freeze MaxViT/MViTv2 backbones (except
+                the last `unfreeze_last_n_blocks` stages) to reduce
+                overfitting on small datasets like ViSEC.
+            unfreeze_last_n_blocks: Number of trailing backbone stages to
+                keep trainable when freeze_backbone=True.
         """
         super().__init__()
         
@@ -294,13 +303,20 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
         # Path 2: Mel-STFT → MViTv2
         self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
         
-        # Get feature dimensions via dummy forward pass
-        with torch.no_grad():
-            dummy = torch.randn(1, 3, 224, 224)
-            dim_cqt = self.maxvit(dummy).shape[1]
-            dim_mel = self.mvitv2(dummy).shape[1]
-            
+        # Get feature dimensions (fixed at 768 for both base backbones)
+        dim_cqt = 768
+        dim_mel = 768
         print(f"Feature dims - CQT/MaxViT: {dim_cqt}, Mel/MViTv2: {dim_mel}")
+
+        # Optionally freeze backbones (transfer-learning regularization)
+        self.freeze_backbone = freeze_backbone
+        if freeze_backbone:
+            f1, t1 = freeze_backbone_layers(self.maxvit, unfreeze_last_n_blocks)
+            f2, t2 = freeze_backbone_layers(self.mvitv2, unfreeze_last_n_blocks)
+            print(f"Froze MaxViT backbone: {f1/1e6:.1f}M frozen / {t1/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
+            print(f"Froze MViTv2 backbone: {f2/1e6:.1f}M frozen / {t2/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
         
         # --- Cross-Attention Fusion ---
         if fusion_hidden_dim is None:
@@ -320,13 +336,19 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
         print(f"Fusion output dim: {fusion_output_dim}")
         
         # --- MLP Head ---
-        self.mlp = nn.Sequential(
+        self.mlp_shared = nn.Sequential(
             nn.Linear(fusion_output_dim, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_size, num_classes)
+            nn.Dropout(dropout_rate)
         )
+        self.emotion_head = nn.Linear(hidden_size, num_classes)
+        
+        self.num_accent_classes = num_accent_classes
+        if num_accent_classes > 0:
+            self.accent_head = nn.Linear(hidden_size, num_accent_classes)
+        else:
+            self.accent_head = None
         
         # Store config
         self.fusion_hidden_dim = fusion_hidden_dim
@@ -365,35 +387,64 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
         fused, attn_info = self.cross_attn_fusion(feat_cqt, feat_mel)
         
         # Classification
-        logits = self.mlp(fused)
+        shared_features = self.mlp_shared(fused)
+        logits = self.emotion_head(shared_features)
+        
+        accent_logits = None
+        if self.accent_head is not None:
+            accent_logits = self.accent_head(shared_features)
         
         if return_attention:
+            if accent_logits is not None:
+                return logits, accent_logits, attn_info
             return logits, attn_info
+            
+        if accent_logits is not None:
+            return logits, accent_logits
+            
         return logits
 
 
-def get_optimizer_crossattn(model, lr=0.0002):
+def get_optimizer_crossattn(model, lr=0.0002, backbone_lr=None, head_lr=None):
     """
-    Optimizers following paper specifications:
-    - MaxViT: Adam (lr=0.0002)
-    - MViTv2: RAdam (lr=0.0002)
-    - CrossAttn + MLP: Adam (with higher lr for new layers)
+    Optimizers with discriminative learning rates:
+    - MaxViT backbone (pretrained): Adam @ backbone_lr
+    - MViTv2 backbone (pretrained): RAdam @ backbone_lr
+    - CrossAttn fusion + MLP (randomly initialized): Adam @ head_lr
+
+    If backbone_lr/head_lr are not provided, backbone_lr falls back to `lr`
+    and head_lr falls back to `lr * 2` (reproduces the original behaviour).
+
+    Only parameters with requires_grad=True are included, so this plays
+    nicely with freeze_backbone=True.
     """
-    maxvit_params = list(model.maxvit.parameters())
-    mvitv2_params = list(model.mvitv2.parameters())
-    fusion_params = list(model.cross_attn_fusion.parameters())
-    mlp_params = list(model.mlp.parameters())
-    
-    # Optimizer 1: MaxViT (pretrained) → Adam with base lr
-    opt_maxvit = torch.optim.Adam(maxvit_params, lr=lr)
-    
-    # Optimizer 2: MViTv2 (pretrained) → RAdam with base lr
-    opt_mvitv2 = torch.optim.RAdam(mvitv2_params, lr=lr)
-    
-    # Optimizer 3: Fusion + MLP (new layers) → Adam with slightly higher lr
-    opt_fusion = torch.optim.Adam(fusion_params + mlp_params, lr=lr * 2)
-    
-    return [opt_maxvit, opt_mvitv2, opt_fusion]
+    backbone_lr = lr if backbone_lr is None else backbone_lr
+    head_lr = (lr * 2) if head_lr is None else head_lr
+
+    maxvit_params = [p for p in model.maxvit.parameters() if p.requires_grad]
+    mvitv2_params = [p for p in model.mvitv2.parameters() if p.requires_grad]
+    fusion_params = [p for p in model.cross_attn_fusion.parameters() if p.requires_grad]
+    mlp_params = [p for p in model.mlp_shared.parameters() if p.requires_grad] + \
+                 [p for p in model.emotion_head.parameters() if p.requires_grad]
+    if getattr(model, 'accent_head', None) is not None:
+        mlp_params += [p for p in model.accent_head.parameters() if p.requires_grad]
+
+    optimizers = []
+
+    # Optimizer 1: MaxViT (pretrained) → Adam with backbone lr
+    if maxvit_params:
+        optimizers.append(torch.optim.Adam(maxvit_params, lr=backbone_lr))
+
+    # Optimizer 2: MViTv2 (pretrained) → RAdam with backbone lr
+    if mvitv2_params:
+        optimizers.append(torch.optim.RAdam(mvitv2_params, lr=backbone_lr))
+
+    # Optimizer 3: Fusion + MLP (new layers) → Adam with head lr
+    head_side_params = fusion_params + mlp_params
+    if head_side_params:
+        optimizers.append(torch.optim.Adam(head_side_params, lr=head_lr))
+
+    return optimizers
 
 
 # ==================== Quick Test ====================

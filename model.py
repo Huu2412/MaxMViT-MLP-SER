@@ -7,8 +7,12 @@ import numpy as np
 import cv2
 import os
 
+from utils import freeze_backbone_layers
+
 class MaxMViT_MLP(nn.Module):
-    def __init__(self, num_classes=7, hidden_size=512, dropout_rate=0.2):
+    def __init__(self, num_classes=7, hidden_size=512, dropout_rate=0.2,
+                 num_accent_classes=0,
+                 freeze_backbone=False, unfreeze_last_n_blocks=0):
         """
         MaxMViT and MViTv2 Fusion Network with Multilayer Perceptron (MaxMViT-MLP).
         
@@ -16,6 +20,11 @@ class MaxMViT_MLP(nn.Module):
             num_classes (int): Number of emotion classes (e.g., 7 for Emo-DB).
             hidden_size (int): Number of hidden nodes in MLP (default 512).
             dropout_rate (float): Dropout rate (default 0.2).
+            freeze_backbone (bool): If True, freeze MaxViT/MViTv2 backbones
+                (except the last `unfreeze_last_n_blocks` stages) to reduce
+                overfitting on small datasets like ViSEC.
+            unfreeze_last_n_blocks (int): Number of trailing backbone stages
+                to keep trainable when freeze_backbone=True.
         """
         super(MaxMViT_MLP, self).__init__()
         
@@ -29,25 +38,29 @@ class MaxMViT_MLP(nn.Module):
 
         # Print config to verify window sizes if possible, or just the model name
         print(f"Initialized MaxViT: {self.maxvit.default_cfg['architecture']}")
+
+        # Optionally freeze backbones (transfer-learning regularization)
+        self.freeze_backbone = freeze_backbone
+        if freeze_backbone:
+            f1, t1 = freeze_backbone_layers(self.maxvit, unfreeze_last_n_blocks)
+            f2, t2 = freeze_backbone_layers(self.mvitv2, unfreeze_last_n_blocks)
+            print(f"Froze MaxViT backbone: {f1/1e6:.1f}M frozen / {t1/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
+            print(f"Froze MViTv2 backbone: {f2/1e6:.1f}M frozen / {t2/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
         
-        # Calculate feature dimension
-        # We need to do a dummy forward pass or check config to know output dim.
-        # Typically: MaxViT Small ~768, MViTv2 Small ~768 (checking needed)
-        with torch.no_grad():
-            # Use 224 for feature dim calc because we interpolate to 224 before backbone
-            dummy_input = torch.randn(1, 3, 224, 224) 
-            maxvit_dim = self.maxvit(dummy_input).shape[1]
-            mvitv2_dim = self.mvitv2(dummy_input).shape[1]
-            
+        # Calculate feature dimension (fixed at 768 for both base backbones)
+        maxvit_dim = 768
+        mvitv2_dim = 768
         fusion_dim = maxvit_dim + mvitv2_dim
         
         # --- MLP Head ---
         # Dense layer -> Batch Norm -> Dropout -> Classification
-        self.mlp = nn.Sequential(
+        self.mlp_shared = nn.Sequential(
             nn.Linear(fusion_dim, hidden_size),
             nn.BatchNorm1d(hidden_size),
             nn.Dropout(dropout_rate),
-            nn.ReLU(), # Paper implies activation before classification? 
+            nn.ReLU()  # Paper implies activation before classification? 
                        # "Dense layer... followed by classification layer... softmax"
                        # Usually Dense -> Activation -> BN -> Dropout -> FC.
                        # Paper text: "dense layer, batch normalization layer, dropout layer, and a classification layer."
@@ -55,8 +68,15 @@ class MaxMViT_MLP(nn.Module):
                        # Section III.D.1: "Dense layer... applies linear transformation... BN... Dropout... Classification layer computes probabilities... softmax"
                        # Usually Linear implies just linear. But networks need non-linearity.
                        # I will add ReLU for safety as "Dense Layer" typically implies a hidden layer with activation.
-            nn.Linear(hidden_size, num_classes)
         )
+        self.emotion_head = nn.Linear(hidden_size, num_classes)
+        
+        self.num_accent_classes = num_accent_classes
+        if num_accent_classes > 0:
+            self.accent_head = nn.Linear(hidden_size, num_accent_classes)
+        else:
+            self.accent_head = None
+
 
     def forward(self, cqt, mel):
         """
@@ -101,26 +121,52 @@ class MaxMViT_MLP(nn.Module):
         fused = torch.cat((feat_maxvit, feat_mvitv2), dim=1)
         
         # MLP
-        logits = self.mlp(fused)
+        shared_features = self.mlp_shared(fused)
+        logits = self.emotion_head(shared_features)
+        
+        if self.accent_head is not None:
+            accent_logits = self.accent_head(shared_features)
+            return logits, accent_logits
         
         return logits
 
-def get_optimizer(model, lr=0.02):
+def get_optimizer(model, lr=0.02, backbone_lr=None, head_lr=None):
     """
-    Returns the optimizers as specified in the paper:
-    - MaxViT: Adam
-    - MViTv2: RAdam
-    - MLP: Assuming Adam (matches MaxViT or dominant)
+    Returns the optimizers, with support for discriminative learning rates:
+    - MaxViT backbone: Adam @ backbone_lr (low, since it's pretrained)
+    - MViTv2 backbone: RAdam @ backbone_lr
+    - MLP head (randomly initialized): Adam @ head_lr (higher)
+
+    If backbone_lr/head_lr are not provided, both fall back to `lr`
+    (reproduces the original paper-style behaviour of one shared LR).
+
+    Only parameters with requires_grad=True are included, so this plays
+    nicely with freeze_backbone=True.
     """
-    # Split parameters
-    maxvit_params = list(model.maxvit.parameters())
-    mvitv2_params = list(model.mvitv2.parameters())
-    mlp_params = list(model.mlp.parameters())
-    
-    # Optimizer 1: MaxViT (and let's put MLP here too) -> Adam
-    optimizer1 = torch.optim.Adam(maxvit_params + mlp_params, lr=lr)
-    
-    # Optimizer 2: MViTv2 -> RAdam
-    optimizer2 = torch.optim.RAdam(mvitv2_params, lr=lr)
-    
-    return [optimizer1, optimizer2] 
+    backbone_lr = lr if backbone_lr is None else backbone_lr
+    head_lr = lr if head_lr is None else head_lr
+
+    # Split parameters, only keep trainable ones
+    maxvit_params = [p for p in model.maxvit.parameters() if p.requires_grad]
+    mvitv2_params = [p for p in model.mvitv2.parameters() if p.requires_grad]
+    mlp_params = [p for p in model.mlp_shared.parameters() if p.requires_grad] + \
+                 [p for p in model.emotion_head.parameters() if p.requires_grad]
+    if model.accent_head is not None:
+        mlp_params += [p for p in model.accent_head.parameters() if p.requires_grad]
+
+    optimizers = []
+
+    # Optimizer 1: MaxViT backbone + MLP head, different LR groups -> Adam
+    param_groups = []
+    if maxvit_params:
+        param_groups.append({'params': maxvit_params, 'lr': backbone_lr})
+    if mlp_params:
+        param_groups.append({'params': mlp_params, 'lr': head_lr})
+    if param_groups:
+        optimizers.append(torch.optim.Adam(param_groups))
+
+    # Optimizer 2: MViTv2 backbone -> RAdam
+    if mvitv2_params:
+        optimizers.append(torch.optim.RAdam(mvitv2_params, lr=backbone_lr))
+
+    return optimizers

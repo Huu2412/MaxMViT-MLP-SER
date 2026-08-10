@@ -17,3 +17,4 @@ inspect_hf_dataset.py
 *.pdf
 log.txt
 *.log
+checkpoints/

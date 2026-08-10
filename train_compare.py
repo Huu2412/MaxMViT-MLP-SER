@@ -19,6 +19,9 @@ import warnings
 import json
 from datetime import datetime
 from tabulate import tabulate
+import copy
+from sklearn.metrics import recall_score, f1_score
+
 
 # Suppress librosa n_fft warnings
 warnings.filterwarnings('ignore', message='n_fft=.*is too large for input signal')
@@ -118,6 +121,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
     best_val_loss = float('inf')
     best_epoch = 0
     patience_counter = 0
+    best_model_state = None
     start_time = time.time()
     
     for epoch in range(EPOCHS):
@@ -179,6 +183,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
             best_val_loss = val_loss
             best_epoch = epoch + 1
             patience_counter = 0
+            best_model_state = copy.deepcopy(model.state_dict())
             logger.info(f"[{model_type}] ★ New Best! Acc: {val_acc:.2f}%")
         else:
             patience_counter += 1
@@ -188,6 +193,60 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
     
     total_time = time.time() - start_time
     
+    # Reload best model state dict for benchmarking
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        
+    logger.info(f"[{model_type}] Running final benchmarks on best model (Epoch {best_epoch})...")
+    
+    # Calculate FLOPs using thop
+    flops_val = 0.0
+    try:
+        import thop
+        cqt_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+        mel_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+        flops_raw, _ = thop.profile(model, inputs=(cqt_dummy, mel_dummy), verbose=False)
+        flops_val = flops_raw / 1e9  # in GFLOPs
+    except Exception as e:
+        logger.warning(f"Could not calculate FLOPs: {e}")
+        
+    # Measure inference time and gather predictions
+    model.eval()
+    all_preds = []
+    all_labels = []
+    num_batches_to_time = min(20, len(val_loader))
+    total_inf_time = 0.0
+    num_samples_timed = 0
+    with torch.no_grad():
+        # Warmup
+        cqt_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+        mel_dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+        for _ in range(5):
+            _ = model(cqt_dummy, mel_dummy)
+            
+        for idx, (cqt, mel, label) in enumerate(val_loader):
+            cqt, mel = cqt.to(DEVICE), mel.to(DEVICE)
+            start_t = time.time()
+            outputs = model(cqt, mel)
+            elapsed = time.time() - start_t
+            
+            if idx < num_batches_to_time:
+                total_inf_time += elapsed
+                num_samples_timed += cqt.size(0)
+                
+            _, predicted = outputs.max(1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(label.numpy())
+            
+    inf_time_sample = (total_inf_time / num_samples_timed) * 1000.0 if num_samples_timed > 0 else 0.0
+    batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else 8
+    inf_time_batch = inf_time_sample * batch_size
+    
+    # Calculate evaluation metrics
+    val_uwa = 100.0 * recall_score(all_labels, all_preds, average='macro', zero_division=0)
+    val_mf1 = 100.0 * f1_score(all_labels, all_preds, average='macro', zero_division=0)
+    val_f1_weighted = 100.0 * f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+    
     result = {
         'model_type': model_type,
         'best_val_acc': best_val_acc,
@@ -196,8 +255,15 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
         'total_epochs': epoch + 1,
         'total_time': total_time,
         'total_params': total_params,
-        'trainable_params': trainable_params
+        'trainable_params': trainable_params,
+        'val_uwa': val_uwa,
+        'val_mf1': val_mf1,
+        'val_f1_weighted': val_f1_weighted,
+        'flops': flops_val,
+        'inference_time_sample_ms': inf_time_sample,
+        'inference_time_batch_ms': inf_time_batch
     }
+
     
     logger.info(f"[{model_type}] Finished! Best Acc: {best_val_acc:.2f}% at epoch {best_epoch}")
     
@@ -212,7 +278,10 @@ def generate_comparison_table(results, logger):
     """Generate a markdown comparison table from results."""
     
     # Prepare table data
-    headers = ["Model", "Fusion Type", "Best Val Acc (%)", "Best Val Loss", "Best Epoch", "Total Epochs", "Time (min)", "Params (M)"]
+    headers = [
+        "Model", "Fusion Type", "Best Val Acc (%)", "Val UWA (%)", 
+        "Val mF1 (%)", "FLOPs (G)", "Inf Sample (ms)", "Params (M)"
+    ]
     
     fusion_names = {
         'original': 'Concatenation',
@@ -226,10 +295,10 @@ def generate_comparison_table(results, logger):
             r['model_type'].upper(),
             fusion_names.get(r['model_type'], 'Unknown'),
             f"{r['best_val_acc']:.2f}",
-            f"{r['best_val_loss']:.4f}",
-            r['best_epoch'],
-            r['total_epochs'],
-            f"{r['total_time']/60:.1f}",
+            f"{r.get('val_uwa', 0.0):.2f}",
+            f"{r.get('val_mf1', 0.0):.2f}",
+            f"{r.get('flops', 0.0):.2f}",
+            f"{r.get('inference_time_sample_ms', 0.0):.2f}",
             f"{r['total_params']/1e6:.2f}"
         ])
     
@@ -336,7 +405,14 @@ def train_compare(config_path):
             f.write(f"- Best Epoch: {r['best_epoch']}\n")
             f.write(f"- Total Epochs: {r['total_epochs']}\n")
             f.write(f"- Training Time: {r['total_time']/60:.1f} minutes\n")
-            f.write(f"- Parameters: {r['total_params']:,}\n\n")
+            f.write(f"- Unweighted Accuracy (UA/UWA): {r.get('val_uwa', 0.0):.2f}%\n")
+            f.write(f"- Macro F1-score (mF1): {r.get('val_mf1', 0.0):.2f}%\n")
+            f.write(f"- Weighted F1-score: {r.get('val_f1_weighted', 0.0):.2f}%\n")
+            f.write(f"- FLOPs (per sample): {r.get('flops', 0.0):.2f} GFLOPs\n")
+            f.write(f"- Inference Time per sample: {r.get('inference_time_sample_ms', 0.0):.2f} ms\n")
+            f.write(f"- Inference Time per batch (size {config['dataset']['args']['batch_size']}): {r.get('inference_time_batch_ms', 0.0):.2f} ms\n")
+            f.write(f"- Total Parameters: {r['total_params']:,} ({r['total_params']/1e6:.2f}M)\n")
+            f.write(f"- Trainable Parameters: {r['trainable_params']:,}\n\n")
     
     logger.info(f"Markdown table saved to: {table_file}")
     logger.info("")

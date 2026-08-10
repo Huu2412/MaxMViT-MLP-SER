@@ -10,6 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import timm
 
+from utils import freeze_backbone_layers
+
 
 class GatedMultimodalUnit(nn.Module):
     """
@@ -99,30 +101,43 @@ class MaxMViT_MLP_GMU(nn.Module):
     """
     
     def __init__(self, num_classes=7, hidden_size=512, dropout_rate=0.2, 
-                 fusion_hidden_dim=None):
+                 fusion_hidden_dim=None, num_accent_classes=0,
+                 freeze_backbone=False, unfreeze_last_n_blocks=0):
         """
         Args:
             num_classes: Number of emotion classes
             hidden_size: MLP hidden layer size (paper: 512)
             dropout_rate: Dropout rate (paper: 0.2)
             fusion_hidden_dim: GMU hidden dimension (None = auto)
+            num_accent_classes: Number of accent/region classes (0 = disabled)
+            freeze_backbone: If True, freeze MaxViT/MViTv2 backbones (except
+                the last `unfreeze_last_n_blocks` stages) to reduce
+                overfitting on small datasets like ViSEC.
+            unfreeze_last_n_blocks: Number of trailing backbone stages to
+                keep trainable when freeze_backbone=True.
         """
         super().__init__()
         
-        # --- Backbone: Same as original ---
         # Path 1: CQT → MaxViT
         self.maxvit = timm.create_model('maxvit_base_tf_224', pretrained=True, num_classes=0)
         
         # Path 2: Mel-STFT → MViTv2
         self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
         
-        # Get feature dimensions
-        with torch.no_grad():
-            dummy = torch.randn(1, 3, 224, 224)
-            dim_cqt = self.maxvit(dummy).shape[1]   # MaxViT output dim
-            dim_mel = self.mvitv2(dummy).shape[1]   # MViTv2 output dim
-            
+        # Get feature dimensions (fixed at 768 for both base backbones)
+        dim_cqt = 768
+        dim_mel = 768
         print(f"Feature dims - CQT/MaxViT: {dim_cqt}, Mel/MViTv2: {dim_mel}")
+
+        # Optionally freeze backbones (transfer-learning regularization)
+        self.freeze_backbone = freeze_backbone
+        if freeze_backbone:
+            f1, t1 = freeze_backbone_layers(self.maxvit, unfreeze_last_n_blocks)
+            f2, t2 = freeze_backbone_layers(self.mvitv2, unfreeze_last_n_blocks)
+            print(f"Froze MaxViT backbone: {f1/1e6:.1f}M frozen / {t1/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
+            print(f"Froze MViTv2 backbone: {f2/1e6:.1f}M frozen / {t2/1e6:.1f}M trainable "
+                  f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
         
         # --- GMU Fusion (NEW) ---
         if fusion_hidden_dim is None:
@@ -134,15 +149,24 @@ class MaxMViT_MLP_GMU(nn.Module):
             hidden_dim=fusion_hidden_dim
         )
         
-        # --- MLP Head ---
-        # Input is now fusion_hidden_dim instead of dim_cqt + dim_mel
-        self.mlp = nn.Sequential(
+        # --- MLP Shared Feature Extractor ---
+        self.mlp_shared = nn.Sequential(
             nn.Linear(fusion_hidden_dim, hidden_size),
-            nn.BatchNorm1d(hidden_size),
+            nn.LayerNorm(hidden_size),   # LayerNorm: ổn định với batch_size nhỏ (thay BatchNorm1d)
             nn.ReLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(hidden_size, num_classes)
         )
+        
+        # --- Emotion Classification Head (Primary Task) ---
+        self.emotion_head = nn.Linear(hidden_size, num_classes)
+        
+        # --- Accent/Region Classification Head (Auxiliary Task) ---
+        self.num_accent_classes = num_accent_classes
+        if num_accent_classes > 0:
+            self.accent_head = nn.Linear(hidden_size, num_accent_classes)
+            print(f"Accent head enabled: {num_accent_classes} classes")
+        else:
+            self.accent_head = None
         
         # Store for analysis
         self.fusion_hidden_dim = fusion_hidden_dim
@@ -155,8 +179,9 @@ class MaxMViT_MLP_GMU(nn.Module):
             return_gate: If True, also return gate values for analysis
             
         Returns:
-            logits: [B, num_classes]
-            gate_values (optional): [B, hidden_dim] - shows modality importance
+            emotion_logits: [B, num_classes]
+            accent_logits (if accent_head exists): [B, num_accent_classes]
+            gate_values (if return_gate): [B, hidden_dim]
         """
         # Expand to 3 channels if needed
         if cqt.size(1) == 1:
@@ -177,12 +202,23 @@ class MaxMViT_MLP_GMU(nn.Module):
         # GMU Fusion (instead of simple concatenation)
         fused, gate_values = self.gmu(feat_mel, feat_cqt)  # [B, fusion_hidden_dim]
         
-        # Classification
-        logits = self.mlp(fused)
+        # Shared feature extraction
+        shared_features = self.mlp_shared(fused)  # [B, hidden_size]
+        
+        # Emotion classification (primary task)
+        emotion_logits = self.emotion_head(shared_features)
+        
+        # Accent classification (auxiliary task)
+        accent_logits = None
+        if self.accent_head is not None:
+            accent_logits = self.accent_head(shared_features)
         
         if return_gate:
-            return logits, gate_values
-        return logits
+            return emotion_logits, accent_logits, gate_values
+        
+        if accent_logits is not None:
+            return emotion_logits, accent_logits
+        return emotion_logits
 
 
 class MaxMViT_MLP_GMU_Contrastive(MaxMViT_MLP_GMU):
@@ -345,34 +381,55 @@ class ContrastiveLoss(nn.Module):
 
 # ==================== Optimizer ====================
 
-def get_optimizer_gmu(model, lr=0.02):
+def get_optimizer_gmu(model, lr=0.02, backbone_lr=None, head_lr=None):
     """
-    Optimizers following paper specifications:
-    - MaxViT: Adam (lr=0.02)
-    - MViTv2: RAdam (lr=0.02)  
-    - GMU + MLP: Adam
+    Optimizers with discriminative learning rates:
+    - MaxViT backbone: Adam @ backbone_lr
+    - MViTv2 backbone: RAdam @ backbone_lr
+    - GMU + MLP + Heads + projections (randomly initialized): Adam @ head_lr
+
+    If backbone_lr/head_lr are not provided, both fall back to `lr`
+    (reproduces the original shared-LR behaviour).
+
+    Only parameters with requires_grad=True are included, so this plays
+    nicely with freeze_backbone=True.
     """
-    maxvit_params = list(model.maxvit.parameters())
-    mvitv2_params = list(model.mvitv2.parameters())
-    gmu_params = list(model.gmu.parameters())
-    mlp_params = list(model.mlp.parameters())
-    
+    backbone_lr = lr if backbone_lr is None else backbone_lr
+    head_lr = lr if head_lr is None else head_lr
+
+    maxvit_params = [p for p in model.maxvit.parameters() if p.requires_grad]
+    mvitv2_params = [p for p in model.mvitv2.parameters() if p.requires_grad]
+    gmu_params = [p for p in model.gmu.parameters() if p.requires_grad]
+    mlp_params = [p for p in model.mlp_shared.parameters() if p.requires_grad]
+    head_params = [p for p in model.emotion_head.parameters() if p.requires_grad]
+
+    # Accent head params (if exists)
+    if model.accent_head is not None:
+        head_params += [p for p in model.accent_head.parameters() if p.requires_grad]
+
     # Optional: contrastive projection params
     other_params = []
     if hasattr(model, 'proj_cqt'):
-        other_params += list(model.proj_cqt.parameters())
-        other_params += list(model.proj_mel.parameters())
-    
-    # Optimizer 1: MaxViT + GMU + MLP + projections → Adam
-    opt1 = torch.optim.Adam(
-        maxvit_params + gmu_params + mlp_params + other_params, 
-        lr=lr
-    )
-    
-    # Optimizer 2: MViTv2 → RAdam
-    opt2 = torch.optim.RAdam(mvitv2_params, lr=lr)
-    
-    return [opt1, opt2]
+        other_params += [p for p in model.proj_cqt.parameters() if p.requires_grad]
+        other_params += [p for p in model.proj_mel.parameters() if p.requires_grad]
+
+    optimizers = []
+
+    # Optimizer 1: MaxViT backbone (low LR) + GMU/MLP/Heads/projections (high LR) → Adam
+    param_groups = []
+    if maxvit_params:
+        param_groups.append({'params': maxvit_params, 'lr': backbone_lr})
+    head_side_params = gmu_params + mlp_params + head_params + other_params
+    if head_side_params:
+        param_groups.append({'params': head_side_params, 'lr': head_lr})
+    if param_groups:
+        optimizers.append(torch.optim.Adam(param_groups))
+
+    # Optimizer 2: MViTv2 backbone → RAdam
+    if mvitv2_params:
+        optimizers.append(torch.optim.RAdam(mvitv2_params, lr=backbone_lr))
+
+    return optimizers
 
 
 # ==================== Quick Test ====================

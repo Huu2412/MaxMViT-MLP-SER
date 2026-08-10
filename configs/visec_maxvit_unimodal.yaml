@@ -1,0 +1,74 @@
+experiment_name: "visec_maxvit_unimodal"
+
+# ============================================================================
+# Single Backbone Experiment: MaxViT only (CQT spectrogram)
+# Unimodal baseline to measure contribution of MaxViT backbone alone.
+# Includes Region Recognition (RR) auxiliary task for fair comparison.
+# ============================================================================
+
+dataset:
+  name: "visec"
+  args:
+    hf_id: "hustep-lab/ViSEC"
+    batch_size: 8
+    num_workers: 4
+    target_size: [224, 224]
+    spec_augment:
+      freq_mask_param: 27
+      time_mask_param: 30
+      num_freq_masks: 1
+      num_time_masks: 2
+      prob: 0.5
+    waveform_augment:
+      prob: 0.7
+      pitch_shift:
+        weight: 0.4
+        n_steps_range: [-1.0, 1.0]
+      noise_injection:
+        weight: 0.4
+        noise_factor_range: [0.001, 0.015]
+      time_shift:
+        weight: 0.2
+        range: [0.9, 1.1]
+
+model:
+  name: "maxvit_unimodal"
+  type: "maxvit_unimodal"           # MaxViT backbone only (CQT input)
+  num_classes: 4
+  hidden_size: 512
+  dropout_rate: 0.3
+  num_heads: 8
+  freeze_backbone: false
+  unfreeze_last_n_blocks: 2
+
+training:
+  epochs: 50
+  lr: 0.0002
+  backbone_lr: 0.0001
+  head_lr: 0.0005
+  label_smoothing: 0.0
+  class_weight: false
+  amp: false
+  grad_clip_norm: 1.0
+  patience: 10
+  seed: 42
+  device: "cuda"
+  checkpoint_metric: "macro_f1"
+  scheduler:
+    type: "cosine"
+    min_lr: 1e-6
+    warmup_epochs: 3
+
+# ============================================================================
+# Auxiliary Task: Region Recognition (RR Loss)
+# ============================================================================
+auxiliary_task:
+  enabled: true
+  task: "accent"
+  num_accent_classes: 3
+  alpha: 0.8
+  auto_class_weights: true
+
+paths:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
