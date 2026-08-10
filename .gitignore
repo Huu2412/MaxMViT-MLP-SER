@@ -18,3 +18,7 @@ inspect_hf_dataset.py
 log.txt
 *.log
 checkpoints/
+logs/
+scratch/
+local_data/
+visec_dataset/
