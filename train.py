@@ -195,14 +195,18 @@ def train(config_path):
             train_dist_str = ", ".join([f"{rev_accent_map.get(k, f'class_{k}')}: {v} ({v/len(train_accents)*100:.2f}%)" for k, v in sorted(train_counts.items())])
             logging.info(f"Train accent distribution: {train_dist_str}")
             
-            # Val distribution
-            if val_loader:
-                val_accents = [idx_tuple[2] for idx_tuple in val_loader.dataset.indices]
-                val_counts = {}
-                for acc in val_accents:
-                    val_counts[acc] = val_counts.get(acc, 0) + 1
-                val_dist_str = ", ".join([f"{rev_accent_map.get(k, f'class_{k}')}: {v} ({v/len(val_accents)*100:.2f}%)" for k, v in sorted(val_counts.items())])
-                logging.info(f"Val accent distribution: {val_dist_str}")
+            # Val distribution (only if val dataset also has accent labels, i.e. same format as train)
+            if val_loader and hasattr(val_loader.dataset, 'indices') and len(val_loader.dataset.indices) > 0:
+                first_val_index = val_loader.dataset.indices[0]
+                if len(first_val_index) == 3:
+                    val_accents = [idx_tuple[2] for idx_tuple in val_loader.dataset.indices]
+                    val_counts = {}
+                    for acc in val_accents:
+                        val_counts[acc] = val_counts.get(acc, 0) + 1
+                    val_dist_str = ", ".join([f"{rev_accent_map.get(k, f'class_{k}')}: {v} ({v/len(val_accents)*100:.2f}%)" for k, v in sorted(val_counts.items())])
+                    logging.info(f"Val accent distribution: {val_dist_str}")
+                else:
+                    logging.info("Val set (cross-dataset) does not have accent labels — skipping accent distribution log.")
 
     # 4. Model - Select based on config
     num_classes = model_cfg.get('num_classes', 4)
