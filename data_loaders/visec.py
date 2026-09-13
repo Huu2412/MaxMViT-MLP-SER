@@ -132,7 +132,7 @@ class ViSECDataset(Dataset):
                 self.ds = load_dataset("parquet", data_files=local_parquet, split="train").cast_column("path", Audio(decode=False))
             else:
                 print(f"Loading {hf_id} from Hugging Face Hub (Forcing redownload to bypass bad cache)...")
-                self.ds = load_dataset(hf_id, split="train", download_mode="force_redownload").cast_column("path", Audio(decode=False))
+                self.ds = load_dataset(hf_id, split="train").cast_column("path", Audio(decode=False))
             
             emotions = self.ds['emotion']
             has_accent = self.load_accent and 'accent' in self.ds.column_names
