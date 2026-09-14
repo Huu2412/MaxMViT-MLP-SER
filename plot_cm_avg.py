@@ -187,7 +187,7 @@ def create_model(model_type, num_classes, model_cfg):
 # ============================================================
 # Dataset creation - uses HF cache, no cast_column
 # ============================================================
-def create_val_loader(config):
+def create_val_loader(config, custom_seed=None):
     """Load HF dataset fast using pyarrow directly to bypass HF hangs, build val indices, return DataLoader."""
     from datasets import load_dataset
     
@@ -196,7 +196,7 @@ def create_val_loader(config):
     hf_id = args.get('hf_id', 'hustep-lab/ViSEC')
     batch_size = args.get('batch_size', 8)
     target_size = tuple(args.get('target_size', [224, 224]))
-    seed = config.get('training', {}).get('seed', 42)
+    seed = custom_seed if custom_seed is not None else config.get('training', {}).get('seed', 42)
 
     target_classes = ['happy', 'neutral', 'sad', 'angry']
     class_map = {c: i for i, c in enumerate(target_classes)}
@@ -307,23 +307,25 @@ def main(config_path, results_dir, output_img):
     for f in checkpoint_files:
         print(f"  - {os.path.basename(f)}")
 
-    # Load dataset ONCE
-    print("\n" + "=" * 60)
-    print("Loading dataset...")
-    print("=" * 60)
-    val_loader = create_val_loader(config)
-
     class_names = ['happy', 'neutral', 'sad', 'angry']
     print(f"Class names: {class_names}")
+
+    # Specific seeds used for the checkpoints (in alphabetical order of files)
+    ckpt_seeds = [45, 46, 44]
 
     # Run inference for each checkpoint
     all_cms = []
     all_cms_normalized = []
 
     for i, ckpt_path in enumerate(checkpoint_files):
+        ckpt_seed = ckpt_seeds[i] if i < len(ckpt_seeds) else 42
+        
         print(f"\n{'='*60}")
-        print(f"[{i+1}/{len(checkpoint_files)}] {os.path.basename(ckpt_path)}")
+        print(f"[{i+1}/{len(checkpoint_files)}] {os.path.basename(ckpt_path)} (Seed: {ckpt_seed})")
         print(f"{'='*60}")
+
+        # Load dataset dynamically with the correct validation split seed for this checkpoint
+        val_loader = create_val_loader(config, custom_seed=ckpt_seed)
 
         model = create_model(model_type, num_classes, model_cfg)
         model.to(DEVICE)
