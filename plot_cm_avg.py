@@ -372,12 +372,15 @@ def main(config_path, results_dir, output_img):
     print(f"Saved: {output_img}_avg_normalized.png")
     plt.close()
 
-    # --- Plot 2: Averaged Counts CM ---
+    # --- Plot 2: Averaged Counts CM (Rounded to Integer) ---
     fig, ax = plt.subplots(figsize=(10, 8))
-    annot_c = np.empty_like(avg_cm, dtype=object)
-    for r in range(avg_cm.shape[0]):
-        for c in range(avg_cm.shape[1]):
-            annot_c[r, c] = f"{avg_cm[r, c]:.1f}"
+    
+    # Làm tròn để hiển thị số nguyên theo yêu cầu
+    avg_cm_int = np.round(avg_cm).astype(int)
+    annot_c = np.empty_like(avg_cm_int, dtype=object)
+    for r in range(avg_cm_int.shape[0]):
+        for c in range(avg_cm_int.shape[1]):
+            annot_c[r, c] = f"{avg_cm_int[r, c]}"
 
     sns.heatmap(avg_cm, annot=annot_c, fmt='', cmap='Blues',
                 xticklabels=class_names, yticklabels=class_names, ax=ax,
@@ -390,21 +393,21 @@ def main(config_path, results_dir, output_img):
     print(f"Saved: {output_img}_avg_counts.png")
     plt.close()
 
-    # --- Plot 3: Individual CMs ---
+    # --- Plot 3: Individual CMs (Raw Counts) ---
     n = len(checkpoint_files)
     fig, axes = plt.subplots(1, n, figsize=(8 * n, 7))
     if n == 1:
         axes = [axes]
-    for i, (cm_n, ckpt) in enumerate(zip(all_cms_normalized, checkpoint_files)):
-        sns.heatmap(cm_n, annot=True, fmt='.2f', cmap='Blues',
+    for i, (cm_raw, ckpt) in enumerate(zip(all_cms, checkpoint_files)):
+        sns.heatmap(cm_raw, annot=True, fmt='d', cmap='Blues',
                     xticklabels=class_names, yticklabels=class_names,
-                    vmin=0, vmax=1, ax=axes[i], annot_kws={"size": 10})
+                    ax=axes[i], annot_kws={"size": 12})
         axes[i].set_ylabel('True Label', fontsize=11)
         axes[i].set_xlabel('Predicted Label', fontsize=11)
         name = os.path.basename(ckpt).replace('.zip', '')
         axes[i].set_title(name, fontsize=10)
 
-    plt.suptitle('Individual Normalized Confusion Matrices', fontsize=14, y=1.02)
+    plt.suptitle('Individual Confusion Matrices (Raw Counts)', fontsize=14, y=1.02)
     plt.tight_layout()
     plt.savefig(output_img + "_individual.png", dpi=150, bbox_inches='tight')
     print(f"Saved: {output_img}_individual.png")

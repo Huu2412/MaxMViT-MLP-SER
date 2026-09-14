@@ -45,10 +45,6 @@ model:
   num_heads: 8
   fusion_type: "concat"          # try "gated" as a follow-up ablation
 
-  # --- Transfer-learning regularization ---
-  freeze_backbone: false
-  unfreeze_last_n_blocks: 2      # only used when freeze_backbone: true
-
 
 training:
   epochs: 50
@@ -58,14 +54,7 @@ training:
   backbone_lr: 0.0001             # low LR for pretrained MaxViT/MViTv2 (fine-tuning only)
   head_lr: 0.0005                  # higher LR for randomly-initialized fusion + MLP head
 
-  # --- Regularization / imbalance handling ---
-  label_smoothing: 0.0
-  class_weight: false              # disable until baseline stable (weight=NaN risk on first run)
 
-  # --- Efficiency ---
-  amp: false                       # DISABLED: float16 overflow -> NaN loss on Kaggle T4/P100
-
-  grad_clip_norm: 1.0
   patience: 10
   seed: 42
   device: "cuda"
