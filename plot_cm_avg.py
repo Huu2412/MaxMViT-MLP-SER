@@ -189,10 +189,11 @@ def create_model(model_type, num_classes, model_cfg):
 # ============================================================
 def create_val_loader(config):
     """Load HF dataset fast using pyarrow directly to bypass HF hangs, build val indices, return DataLoader."""
-    import pyarrow.ipc as ipc
+    from datasets import load_dataset
     
     ds_cfg = config.get('dataset', {})
     args = ds_cfg.get('args', {})
+    hf_id = args.get('hf_id', 'hustep-lab/ViSEC')
     batch_size = args.get('batch_size', 8)
     target_size = tuple(args.get('target_size', [224, 224]))
     seed = config.get('training', {}).get('seed', 42)
@@ -201,14 +202,13 @@ def create_val_loader(config):
     class_map = {c: i for i, c in enumerate(target_classes)}
     accent_map = {'north': 0, 'south': 1, 'mid': 2}
 
-    print(f"Loading dataset directly from pyarrow cache...")
-    arrow_path = r'C:\Users\Admin\.cache\huggingface\datasets\hustep-lab___vi_sec\default\0.0.0\1dbd430c85ac5c4a20dbc546b2605f789df2624e\vi_sec-train.arrow'
-    
-    if not os.path.exists(arrow_path):
-        raise FileNotFoundError(f"Cannot find cached dataset at {arrow_path}")
-        
-    table = ipc.RecordBatchStreamReader(open(arrow_path, 'rb')).read_all()
-    print(f"Loaded {len(table)} samples. Columns: {table.column_names}")
+    print(f"Loading dataset from HF (bypassing cast_column to avoid hangs)...")
+    try:
+        ds = load_dataset(hf_id, split='train')
+        table = ds.data  # MemoryMappedTable behaves like pyarrow table
+        print(f"Loaded {len(table)} samples. Columns: {table.column_names}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load dataset {hf_id}. Error: {e}")
 
     # Build indices
     aux_cfg = config.get('auxiliary_task', {})
