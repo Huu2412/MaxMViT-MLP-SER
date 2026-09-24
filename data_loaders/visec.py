@@ -9,6 +9,7 @@ import soundfile as sf
 import random
 import copy
 import os
+import pickle
 
 class ViSECDataset(Dataset):
     def __init__(self, hf_id="hustep-lab/ViSEC", split="train", target_classes=['happy', 'neutral', 'sad', 'angry'], sr=44100, target_size=(244, 244), augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, load_accent=False, csv_path=None, waveform_augment_cfg=None):
@@ -262,11 +263,8 @@ class ViSECDataset(Dataset):
                 mel_delta = self._spec_augment(mel_delta)
                 mel_delta2 = self._spec_augment(mel_delta2)
             
-            cqt_img = self._resize_normalize(cqt_db)
-            
-            # ABLATION: Thay vì dùng delta và delta-delta, ta copy mel_db thành 3 channels
-            # mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
-            mel_img = self._resize_normalize([mel_db, mel_db, mel_db])
+            cqt_img = self._resize_normalize(cqt_db)            
+            mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
             
             cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)
             mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
@@ -329,8 +327,175 @@ class ViSECDataset(Dataset):
         
         return spec
 
-def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None):
+
+class CachedViSECDataset(Dataset):
+    """
+    Dataset class tải trực tiếp CQT và Mel spectrograms đã tính sẵn từ file .pkl.
+    Bỏ qua hoàn toàn việc tính librosa trên CPU mỗi epoch, giúp tăng tốc 10x-50x.
+    SpecAugment vẫn được áp dụng ngẫu nhiên trong lúc train.
+    """
+    def __init__(self, cache_dir="visec_features", split_indices=None, augment=False,
+                 spec_augment_cfg=None, target_size=(224, 224), load_accent=False):
+        self.cache_dir = cache_dir
+        self.augment = augment
+        self.target_size = target_size
+        self.load_accent = load_accent
+
+        meta_path = os.path.join(cache_dir, "metadata.pkl")
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"Cache metadata not found at {meta_path}. Hãy chạy preprocess_features.py trước.")
+        with open(meta_path, 'rb') as f:
+            all_metadata = pickle.load(f)
+
+        if split_indices is not None:
+            self.samples = [all_metadata[i] for i in split_indices]
+        else:
+            self.samples = all_metadata
+
+        # Normalization params (ImageNet)
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+        # SpecAugment params
+        _cfg = spec_augment_cfg or {}
+        self.freq_mask_param = _cfg.get('freq_mask_param', 27)
+        self.time_mask_param = _cfg.get('time_mask_param', 30)
+        self.num_freq_masks = _cfg.get('num_freq_masks', 1)
+        self.num_time_masks = _cfg.get('num_time_masks', 2)
+        self.spec_augment_prob = _cfg.get('prob', 0.5)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def _resize_normalize(self, spec):
+        if isinstance(spec, (list, tuple)):
+            channels = []
+            for s in spec:
+                s_min = s.min()
+                s_max = s.max()
+                s_norm = (s - s_min) / (s_max - s_min + 1e-8)
+                s_resized = cv2.resize(s_norm, (self.target_size[1], self.target_size[0]))
+                channels.append(s_resized)
+            spec_3ch = np.stack(channels, axis=0)
+        else:
+            spec_min = spec.min()
+            spec_max = spec.max()
+            spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
+            spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
+            spec_3ch = np.stack([spec_resized]*3, axis=0)
+
+        for i in range(3):
+            spec_3ch[i] = (spec_3ch[i] - self.mean[i]) / self.std[i]
+
+        return spec_3ch
+
+    def _spec_augment(self, spec):
+        spec = spec.copy()
+        num_freq, num_time = spec.shape
+        fill_value = spec.mean()
+
+        for _ in range(self.num_freq_masks):
+            f = random.randint(0, min(self.freq_mask_param, num_freq - 1))
+            f0 = random.randint(0, num_freq - f)
+            spec[f0:f0 + f, :] = fill_value
+
+        for _ in range(self.num_time_masks):
+            t = random.randint(0, min(self.time_mask_param, num_time - 1))
+            t0 = random.randint(0, num_time - t)
+            spec[:, t0:t0 + t] = fill_value
+
+        return spec
+
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        feature_idx = sample['feature_idx']
+        label = sample['emotion_id']
+        accent_label = sample.get('accent', -1)
+
+        pkl_path = os.path.join(self.cache_dir, f"{feature_idx}.pkl")
+        try:
+            with open(pkl_path, 'rb') as f:
+                data = pickle.load(f)
+            cqt_db = data['cqt_db'].astype(np.float32)
+            mel_db = data['mel_db'].astype(np.float32)
+            mel_delta = data['mel_delta'].astype(np.float32)
+            mel_delta2 = data['mel_delta2'].astype(np.float32)
+
+            if self.augment and random.random() < self.spec_augment_prob:
+                cqt_db = self._spec_augment(cqt_db)
+                mel_db = self._spec_augment(mel_db)
+                mel_delta = self._spec_augment(mel_delta)
+                mel_delta2 = self._spec_augment(mel_delta2)
+
+            cqt_img = self._resize_normalize(cqt_db)
+            mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
+
+            cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)
+            mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
+
+            if self.load_accent:
+                return cqt_tensor, mel_tensor, torch.tensor(label, dtype=torch.long), torch.tensor(accent_label, dtype=torch.long)
+            return cqt_tensor, mel_tensor, torch.tensor(label, dtype=torch.long)
+        except Exception as e:
+            print(f"Error loading cached feature {feature_idx} ({pkl_path}): {e}")
+            dummy_img = torch.zeros((3, self.target_size[0], self.target_size[1]), dtype=torch.float32)
+            if self.load_accent:
+                return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long), torch.tensor(accent_label, dtype=torch.long)
+            return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long)
+
+
+def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None, cache_dir=None, target_size=(224, 224)):
     try:
+        # 1. Tự động kiểm tra hoặc sử dụng cache_dir nếu được cấu hình
+        target_cache = cache_dir or ("visec_features" if os.path.exists(os.path.join("visec_features", "metadata.pkl")) else None)
+        if target_cache and os.path.exists(os.path.join(target_cache, "metadata.pkl")):
+            print(f"[Fast I/O] Loading precomputed spectrograms from cache: {target_cache}...")
+            split_file = os.path.join(target_cache, "split_indices.pkl")
+            train_indices, val_indices = None, None
+            if os.path.exists(split_file):
+                try:
+                    with open(split_file, 'rb') as f:
+                        splits = pickle.load(f)
+                        if splits.get('seed') == seed:
+                            train_indices = splits.get('train')
+                            val_indices = splits.get('val')
+                        else:
+                            print(f"[Seed Split] Config seed ({seed}) differs from cache seed ({splits.get('seed')}). Dynamically splitting with seed={seed}...")
+                except Exception as e:
+                    print(f"Warning reading split_indices: {e}")
+
+            if train_indices is None or val_indices is None:
+                meta_file = os.path.join(target_cache, "metadata.pkl")
+                with open(meta_file, 'rb') as f:
+                    all_meta = pickle.load(f)
+                all_idx = list(range(len(all_meta)))
+                rng = random.Random(seed)
+                rng.shuffle(all_idx)
+                val_len = int(len(all_idx) * 0.2)
+                train_indices = all_idx[val_len:]
+                val_indices = all_idx[:val_len]
+
+            train_ds = CachedViSECDataset(
+                cache_dir=target_cache,
+                split_indices=train_indices,
+                augment=True,
+                spec_augment_cfg=spec_augment_cfg,
+                target_size=target_size,
+                load_accent=load_accent
+            )
+            val_ds = CachedViSECDataset(
+                cache_dir=target_cache,
+                split_indices=val_indices,
+                augment=False,
+                target_size=target_size,
+                load_accent=load_accent
+            )
+            print(f"Cached split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
+            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+            return train_loader, val_loader
+
+        # 2. Fallback sang local preprocessed CSV hoặc Hugging Face trực tiếp
         local_train_csv = os.path.join("visec_dataset", "train.csv")
         local_val_csv = os.path.join("visec_dataset", "val.csv")
         

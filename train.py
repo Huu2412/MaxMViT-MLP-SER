@@ -7,13 +7,14 @@ import os
 import logging
 import warnings
 import numpy as np
+import json
 from sklearn.metrics import classification_report, recall_score, f1_score
 
 
 # Suppress librosa n_fft warnings
 warnings.filterwarnings('ignore', message='n_fft=.*is too large for input signal')
 
-from utils import load_config, setup_logging, seed_everything, compute_class_weights, compute_accent_weights
+from utils import load_config, setup_logging, seed_everything, compute_class_weights, compute_accent_weights, compute_detailed_metrics, load_checkpoint
 from data_loaders import get_dataloaders
 
 # Model imports
@@ -287,6 +288,13 @@ def train(config_path):
             logging.info("Accent loss weights: unweighted CrossEntropyLoss")
         logging.info(f"Accent auxiliary task configured: alpha={aux_alpha}")
     
+    # Class names for detailed prediction metrics and reporting
+    class_names = getattr(val_loader.dataset if val_loader else train_loader.dataset, 'target_classes', None)
+    if class_names is None:
+        class_names = config.get('dataset', {}).get('args', {}).get('target_classes', None)
+    if class_names is None:
+        class_names = ['happy', 'neutral', 'sad', 'angry'] if num_classes == 4 else [f"Class_{i}" for i in range(num_classes)]
+
     # 6. Training Loop
     logging.info("Starting Training...")
     patience_counter = 0
@@ -418,10 +426,27 @@ def train(config_path):
         else:
             logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
         
+        # Compute detailed metrics on validation predictions
+        detailed_metrics = None
+        if val_loader is not None and len(val_labels) > 0:
+            detailed_metrics = compute_detailed_metrics(val_labels, val_preds, class_names=class_names)
+
         # Checkpointing Strategy (Top-K)
         filename = f"epoch_{epoch+1}.pth"
         save_path = os.path.join(ckpt_dir, filename)
-        torch.save(model.state_dict(), save_path)
+        checkpoint_payload = {
+            'epoch': epoch + 1,
+            'state_dict': model.state_dict(),
+            'model_state_dict': model.state_dict(),
+            'val_acc': val_acc,
+            'val_f1': val_f1,
+            'val_loss': val_loss,
+            'class_names': class_names,
+            'confusion_matrix': detailed_metrics['confusion_matrix'] if detailed_metrics else [],
+            'per_class_results': detailed_metrics['per_class'] if detailed_metrics else {},
+            'prediction_breakdown': detailed_metrics['summary_text'] if detailed_metrics else "",
+        }
+        torch.save(checkpoint_payload, save_path)
         
         # Maintain Top-K list (sorted by CHECKPOINT_METRIC descending - highest first).
         # Default is macro_f1: robust to class imbalance, unlike raw accuracy which can
@@ -466,9 +491,8 @@ def train(config_path):
         rank1_path = os.path.join(ckpt_dir, rank1_filename)
         logging.info(f"Running full evaluation on best checkpoint: {rank1_filename}")
         
-        # Load weights into model
-        state_dict = torch.load(rank1_path, map_location=DEVICE)
-        model.load_state_dict(state_dict)
+        # Load weights into model safely
+        load_checkpoint(rank1_path, model, device=DEVICE)
         
         # Calculate parameters
         total_params = sum(p.numel() for p in model.parameters())
@@ -530,11 +554,10 @@ def train(config_path):
         mf1 = 100.0 * f1_score(all_labels, all_preds, average='macro', zero_division=0)
         weighted_f1 = 100.0 * f1_score(all_labels, all_preds, average='weighted', zero_division=0)
         
-        # Class names
-        class_names = getattr(val_loader.dataset, 'target_classes', None)
-        if class_names is None:
-            class_names = [f"Class {i}" for i in range(num_classes)]
-            
+        # Thống kê chi tiết số lượng nhãn dự đoán đúng và các nhãn bị dự đoán sai
+        final_detailed = compute_detailed_metrics(all_labels, all_preds, class_names=class_names)
+        logging.info("\n" + final_detailed['summary_text'])
+        
         report = classification_report(all_labels, all_preds, target_names=class_names, digits=4, zero_division=0)
         
         # Save evaluation report to txt file
@@ -545,10 +568,14 @@ def train(config_path):
             f.write(f"Checkpoint: {rank1_path}\n")
             f.write(f"Config: {config_path}\n")
             f.write(f"Validation Accuracy: {top_k_checkpoints[0]['acc']:.2f}%\n")
-            f.write("="*60 + "\n")
+            f.write(f"Validation Macro F1: {top_k_checkpoints[0]['f1']:.2f}%\n")
+            f.write(f"Validation Loss: {top_k_checkpoints[0]['loss']:.4f}\n")
+            f.write("="*80 + "\n")
+            f.write(final_detailed['summary_text'] + "\n")
+            f.write("="*80 + "\n")
             f.write("Classification Report:\n")
             f.write(report)
-            f.write("\n" + "="*60 + "\n")
+            f.write("\n" + "="*80 + "\n")
             f.write("BENCHMARKS & ADDED METRICS:\n")
             f.write(f"Total Parameters: {total_params / 1e6:.2f}M ({total_params:,})\n")
             f.write(f"Trainable Parameters: {trainable_params / 1e6:.2f}M ({trainable_params:,})\n")
@@ -566,6 +593,22 @@ def train(config_path):
                     f.write(f"  - {name}: {f1_per_class[i]*100.0:.2f}%\n")
                     
         logging.info(f"Saved evaluation benchmarks report to: {report_path}")
+        
+        # Save structured JSON file with detailed predictions breakdown
+        json_filename = rank1_filename.replace(".pth", "_predictions.json")
+        json_path = os.path.join(ckpt_dir, json_filename)
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                'checkpoint': rank1_filename,
+                'epoch': top_k_checkpoints[0]['epoch'],
+                'val_accuracy': top_k_checkpoints[0]['acc'],
+                'val_macro_f1': top_k_checkpoints[0]['f1'],
+                'val_loss': top_k_checkpoints[0]['loss'],
+                'class_names': class_names,
+                'confusion_matrix': final_detailed['confusion_matrix'],
+                'per_class_results': final_detailed['per_class'],
+            }, f, indent=2, ensure_ascii=False)
+        logging.info(f"Saved detailed predictions JSON to: {json_path}")
         logging.info(f"Benchmarks:\nUA/UWA: {ua:.2f}%, mF1: {mf1:.2f}%, F1: {weighted_f1:.2f}%, FLOPs: {flops_str}, Inf time: {inf_time_sample:.2f} ms/sample")
 
 

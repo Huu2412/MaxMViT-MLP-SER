@@ -13,6 +13,7 @@ dataset:
   name: "visec"
   args:
     hf_id: "hustep-lab/ViSEC"
+    cache_dir: "visec_features"    # Precomputed CQT/Mel spectrograms (.pkl)
     batch_size: 8                  # Kaggle GPU memory limit (OOM with 16 → NaN loss)
     num_workers: 4
     target_size: [224, 224]        # was [244,244]: model always interpolates to 224 anyway,

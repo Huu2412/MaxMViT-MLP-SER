@@ -22,3 +22,6 @@ logs/
 scratch/
 local_data/
 visec_dataset/
+visec_features/
+.venv_ag/
+*.zip

@@ -1,8 +1,9 @@
 """
 MaxMViT-MLP with Gated Multimodal Unit (GMU) Fusion
-Based on: GloMER (Nguyen et al., 2025) - Gate Fusion for Multimodal Emotion Recognition
+Standard GMU architecture: Arevalo et al. (2017) - Gated Multimodal Units for Information Fusion
 
-Key improvement: Replace simple concatenation with GMU for adaptive modality balancing.
+Key improvement: Dynamically balance CQT (MaxViT) and Mel-STFT (MViTv2) modalities
+using a dynamic gating vector computed directly from raw concatenated features.
 """
 
 import torch
@@ -15,74 +16,96 @@ from utils import freeze_backbone_layers
 
 class GatedMultimodalUnit(nn.Module):
     """
-    Gated Multimodal Unit (GMU) from GloMER paper.
+    Standard Gated Multimodal Unit (GMU) (Arevalo et al., 2017).
     
-    Dynamically regulates the contribution of each modality.
+    Dynamically balances CQT (MaxViT) and Mel-STFT (MViTv2) representations
+    by computing gating weights directly from raw concatenated features:
     
     Formula:
-        z̃^a = tanh(W_a · z^a + b_a)  # Audio projection
-        z̃^t = tanh(W_t · z^t + b_t)  # Text/CQT projection  
-        g = σ(W_g · [z̃^a; z̃^t] + b_g)  # Gating vector
-        z_fused = g ⊙ z̃^t + (1-g) ⊙ z̃^a  # Weighted fusion
+        h_cqt = tanh(W_cqt · x_cqt + b_cqt)    # Feature projection for CQT (MaxViT)
+        h_mel = tanh(W_mel · x_mel + b_mel)    # Feature projection for Mel-STFT (MViTv2)
+        gate_input = [x_cqt; x_mel]             # Raw concatenated features!
+        z = σ(W_z · gate_input + b_z)          # Gating vector
+        fused = (1 - z) ⊙ h_cqt + z ⊙ h_mel    # Adaptive weighted fusion
     """
     
-    def __init__(self, dim_a, dim_t, hidden_dim=None):
+    def __init__(self, cqt_dim=768, mel_dim=768, fusion_dim=None, dropout_p=0.0,
+                 text_dim=None, audio_dim=None, dim_t=None, dim_a=None, hidden_dim=None):
         """
         Args:
-            dim_a: Dimension of audio/Mel-STFT features (from MViTv2)
-            dim_t: Dimension of text/CQT features (from MaxViT)
-            hidden_dim: Hidden dimension for fusion (default: max of both)
+            cqt_dim: Dimension of CQT features (from MaxViT)
+            mel_dim: Dimension of Mel-STFT features (from MViTv2)
+            fusion_dim: Hidden dimension for fusion (default: max of both)
+            dropout_p: Dropout probability applied to fused features
         """
         super().__init__()
         
-        if hidden_dim is None:
-            hidden_dim = max(dim_a, dim_t)
+        # Backward-compatibility aliases
+        if text_dim is not None: cqt_dim = text_dim
+        if dim_t is not None: cqt_dim = dim_t
+        if audio_dim is not None: mel_dim = audio_dim
+        if dim_a is not None: mel_dim = dim_a
+        if hidden_dim is not None: fusion_dim = hidden_dim
+        if fusion_dim is None: fusion_dim = max(cqt_dim, mel_dim)
+            
+        self.cqt_dim = cqt_dim
+        self.mel_dim = mel_dim
+        self.fusion_dim = fusion_dim
+        self.hidden_dim = fusion_dim
         
-        self.hidden_dim = hidden_dim
+        # Modality projection layers with tanh activation
+        self.cqt_proj = nn.Linear(cqt_dim, fusion_dim)
+        self.mel_proj = nn.Linear(mel_dim, fusion_dim)
         
-        # Projection layers with tanh activation (as per GloMER)
-        self.proj_audio = nn.Sequential(
-            nn.Linear(dim_a, hidden_dim),
-            nn.Tanh()
-        )
+        # Gating mechanism takes RAW concatenated features: [x_cqt; x_mel]
+        self.gate_proj = nn.Linear(cqt_dim + mel_dim, fusion_dim)
         
-        self.proj_cqt = nn.Sequential(
-            nn.Linear(dim_t, hidden_dim),
-            nn.Tanh()
-        )
+        self.tanh = nn.Tanh()
+        self.sigmoid = nn.Sigmoid()
+        self.dropout = nn.Dropout(dropout_p) if dropout_p > 0 else None
         
-        # Gating mechanism
-        # Input: concatenation of projected features [z̃^a; z̃^t]
-        # Output: gate values in [0, 1] via sigmoid
-        self.gate = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.Sigmoid()
-        )
+        # Backward-compatibility aliases
+        self.text_proj = self.cqt_proj
+        self.audio_proj = self.mel_proj
+        self.gate = self.gate_proj
         
-    def forward(self, feat_audio, feat_cqt):
+    def proj_cqt(self, x):
+        return self.tanh(self.cqt_proj(x))
+        
+    def proj_mel(self, x):
+        return self.tanh(self.mel_proj(x))
+
+    def proj_audio(self, x):
+        return self.proj_mel(x)
+        
+    def forward(self, feat_cqt, feat_mel, return_gate=True):
         """
         Args:
-            feat_audio: [B, dim_a] - Features from MViTv2 (Mel-STFT path)
-            feat_cqt: [B, dim_t] - Features from MaxViT (CQT path)
+            feat_cqt: [B, cqt_dim] - CQT features from MaxViT
+            feat_mel: [B, mel_dim] - Mel-STFT features from MViTv2
+            return_gate: If True, also return gate values for analysis
             
         Returns:
-            fused: [B, hidden_dim] - Adaptively fused features
-            gate_values: [B, hidden_dim] - Gate values for analysis
+            fused: [B, fusion_dim] - Adaptively fused features
+            z (if return_gate): [B, fusion_dim] - Gate values
         """
-        # Project to common space with tanh
-        z_audio = self.proj_audio(feat_audio)  # [B, hidden_dim]
-        z_cqt = self.proj_cqt(feat_cqt)        # [B, hidden_dim]
+        # 1. Modality-specific representations
+        h_cqt = self.tanh(self.cqt_proj(feat_cqt))
+        h_mel = self.tanh(self.mel_proj(feat_mel))
+
+        # 2. Gate computed directly from RAW input features
+        gate_input = torch.cat([feat_cqt, feat_mel], dim=1)  # [B, cqt_dim + mel_dim]
+        z = self.sigmoid(self.gate_proj(gate_input))          # [B, fusion_dim], values in [0, 1]
+
+        # 3. Adaptive fusion: (1-z) weights CQT, z weights Mel-STFT
+        fused = (1 - z) * h_cqt + z * h_mel                  # [B, fusion_dim]
         
-        # Compute gating vector
-        concat = torch.cat([z_audio, z_cqt], dim=1)  # [B, hidden_dim * 2]
-        g = self.gate(concat)  # [B, hidden_dim], values in [0, 1]
+        if self.dropout is not None:
+            fused = self.dropout(fused)
         
-        # Adaptive fusion: g controls balance between modalities
-        # g → 1: favor CQT (MaxViT path)
-        # g → 0: favor Mel-STFT (MViTv2 path)
-        fused = g * z_cqt + (1 - g) * z_audio  # [B, hidden_dim]
-        
-        return fused, g
+        if return_gate:
+            return fused, z
+        return fused
 
 
 class MaxMViT_MLP_GMU(nn.Module):
@@ -139,14 +162,14 @@ class MaxMViT_MLP_GMU(nn.Module):
             print(f"Froze MViTv2 backbone: {f2/1e6:.1f}M frozen / {t2/1e6:.1f}M trainable "
                   f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
         
-        # --- GMU Fusion (NEW) ---
+        # --- GMU Fusion ---
         if fusion_hidden_dim is None:
             fusion_hidden_dim = max(dim_cqt, dim_mel)
             
         self.gmu = GatedMultimodalUnit(
-            dim_a=dim_mel,      # Audio/Mel path
-            dim_t=dim_cqt,      # CQT path  
-            hidden_dim=fusion_hidden_dim
+            cqt_dim=dim_cqt,        # CQT path (MaxViT)
+            mel_dim=dim_mel,        # Mel path (MViTv2)
+            fusion_dim=fusion_hidden_dim
         )
         
         # --- MLP Shared Feature Extractor ---
@@ -200,7 +223,7 @@ class MaxMViT_MLP_GMU(nn.Module):
         feat_mel = self.mvitv2(mel)    # [B, dim_mel]
         
         # GMU Fusion (instead of simple concatenation)
-        fused, gate_values = self.gmu(feat_mel, feat_cqt)  # [B, fusion_hidden_dim]
+        fused, gate_values = self.gmu(feat_cqt, feat_mel)  # [B, fusion_hidden_dim]
         
         # Shared feature extraction
         shared_features = self.mlp_shared(fused)  # [B, hidden_size]
@@ -266,7 +289,7 @@ class MaxMViT_MLP_GMU_Contrastive(MaxMViT_MLP_GMU):
         feat_mel = self.mvitv2(mel)
         
         # GMU Fusion
-        fused, gate_values = self.gmu(feat_mel, feat_cqt)
+        fused, gate_values = self.gmu(feat_cqt, feat_mel)
         
         # Classification
         logits = self.mlp(fused)
@@ -275,7 +298,7 @@ class MaxMViT_MLP_GMU_Contrastive(MaxMViT_MLP_GMU):
             # Project for contrastive loss
             # Use the projected features from GMU
             z_cqt = self.gmu.proj_cqt(feat_cqt)
-            z_mel = self.gmu.proj_audio(feat_mel)
+            z_mel = self.gmu.proj_mel(feat_mel)
             
             proj_cqt = self.proj_cqt(z_cqt)
             proj_mel = self.proj_mel(z_mel)

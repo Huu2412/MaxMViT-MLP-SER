@@ -330,7 +330,8 @@ def main(config_path, results_dir, output_img):
         model = create_model(model_type, num_classes, model_cfg)
         model.to(DEVICE)
 
-        state_dict = torch.load(ckpt_path, map_location=DEVICE)
+        loaded = torch.load(ckpt_path, map_location=DEVICE)
+        state_dict = loaded.get('model_state_dict', loaded.get('state_dict', loaded)) if isinstance(loaded, dict) and ('model_state_dict' in loaded or 'state_dict' in loaded) else loaded
         model.load_state_dict(state_dict)
 
         preds, labels = run_inference(model, val_loader, DEVICE)
@@ -361,14 +362,18 @@ def main(config_path, results_dir, output_img):
     annot = np.empty_like(avg_cm_norm, dtype=object)
     for r in range(avg_cm_norm.shape[0]):
         for c in range(avg_cm_norm.shape[1]):
-            annot[r, c] = f"{avg_cm_norm[r, c]:.2f}\n\u00b1{std_cm_norm[r, c]:.2f}"
+            # Chuyển đổi sang phần trăm (x100) và lấy 2 chữ số thập phân
+            annot[r, c] = f"{avg_cm_norm[r, c]*100:.2f}%\n\u00b1{std_cm_norm[r, c]*100:.2f}%"
 
     sns.heatmap(avg_cm_norm, annot=annot, fmt='', cmap='Blues',
                 xticklabels=class_names, yticklabels=class_names,
-                vmin=0, vmax=1, ax=ax, annot_kws={"size": 12})
-    ax.set_ylabel('True Label', fontsize=13)
-    ax.set_xlabel('Predicted Label', fontsize=13)
-    ax.set_title(f'Averaged Normalized Confusion Matrix\n({len(checkpoint_files)} checkpoints, mean \u00b1 std)', fontsize=14)
+                vmin=0, vmax=1, ax=ax, annot_kws={"size": 16, "weight": "bold"})
+    
+    # Tăng kích thước chữ cho trục và tiêu đề
+    ax.set_ylabel('True Label', fontsize=16, weight='bold')
+    ax.set_xlabel('Predicted Label', fontsize=16, weight='bold')
+    ax.tick_params(axis='both', which='major', labelsize=14)
+    ax.set_title(f'Averaged Normalized Confusion Matrix\n({len(checkpoint_files)} checkpoints, mean \u00b1 std)', fontsize=18, weight='bold', pad=20)
     plt.tight_layout()
     plt.savefig(output_img + "_avg_normalized.png", dpi=150)
     print(f"Saved: {output_img}_avg_normalized.png")
