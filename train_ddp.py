@@ -244,7 +244,7 @@ def train_ddp(config_path):
     model.to(device)
     
     # ── Wrap model with DDP ──
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
 
     # AMP GradScaler
     scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)

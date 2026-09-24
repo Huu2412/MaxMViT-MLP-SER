@@ -184,15 +184,26 @@ class ViSECDataset(Dataset):
         else:
             # Fallback to Hugging Face
             item = self.ds[ds_idx]
-            audio_bytes = item['path']['bytes']
+            audio_data = item['path']
             
-            y, orig_sr = sf.read(io.BytesIO(audio_bytes))
-            
-            if orig_sr != self.sr:
-                y = y.astype(np.float32)
-                y = librosa.resample(y, orig_sr=orig_sr, target_sr=self.sr)
+            if isinstance(audio_data, dict):
+                if 'bytes' in audio_data and audio_data['bytes'] is not None:
+                    y, orig_sr = sf.read(io.BytesIO(audio_data['bytes']))
+                elif 'path' in audio_data and audio_data['path'] is not None and os.path.exists(audio_data['path']):
+                    y, orig_sr = sf.read(audio_data['path'])
+                elif 'array' in audio_data:
+                    y = np.array(audio_data['array'], dtype=np.float32)
+                    orig_sr = audio_data.get('sampling_rate', self.sr)
+                else:
+                    raise ValueError(f"Cannot decode audio from dict: {audio_data.keys()}")
+            elif isinstance(audio_data, str) and os.path.exists(audio_data):
+                y, orig_sr = sf.read(audio_data)
             else:
-                y = y.astype(np.float32)
+                y, orig_sr = sf.read(audio_data)
+            
+            y = y.astype(np.float32)
+            if orig_sr != self.sr:
+                y = librosa.resample(y, orig_sr=orig_sr, target_sr=self.sr)
                 
             if y.ndim > 1:
                 y = np.mean(y, axis=0)
@@ -444,58 +455,8 @@ class CachedViSECDataset(Dataset):
             return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long)
 
 
-def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None, cache_dir=None, target_size=(224, 224)):
+def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None, target_size=(224, 224), cache_dir=None):
     try:
-        # 1. Tự động kiểm tra hoặc sử dụng cache_dir nếu được cấu hình
-        target_cache = cache_dir or ("visec_features" if os.path.exists(os.path.join("visec_features", "metadata.pkl")) else None)
-        if target_cache and os.path.exists(os.path.join(target_cache, "metadata.pkl")):
-            print(f"[Fast I/O] Loading precomputed spectrograms from cache: {target_cache}...")
-            split_file = os.path.join(target_cache, "split_indices.pkl")
-            train_indices, val_indices = None, None
-            if os.path.exists(split_file):
-                try:
-                    with open(split_file, 'rb') as f:
-                        splits = pickle.load(f)
-                        if splits.get('seed') == seed:
-                            train_indices = splits.get('train')
-                            val_indices = splits.get('val')
-                        else:
-                            print(f"[Seed Split] Config seed ({seed}) differs from cache seed ({splits.get('seed')}). Dynamically splitting with seed={seed}...")
-                except Exception as e:
-                    print(f"Warning reading split_indices: {e}")
-
-            if train_indices is None or val_indices is None:
-                meta_file = os.path.join(target_cache, "metadata.pkl")
-                with open(meta_file, 'rb') as f:
-                    all_meta = pickle.load(f)
-                all_idx = list(range(len(all_meta)))
-                rng = random.Random(seed)
-                rng.shuffle(all_idx)
-                val_len = int(len(all_idx) * 0.2)
-                train_indices = all_idx[val_len:]
-                val_indices = all_idx[:val_len]
-
-            train_ds = CachedViSECDataset(
-                cache_dir=target_cache,
-                split_indices=train_indices,
-                augment=True,
-                spec_augment_cfg=spec_augment_cfg,
-                target_size=target_size,
-                load_accent=load_accent
-            )
-            val_ds = CachedViSECDataset(
-                cache_dir=target_cache,
-                split_indices=val_indices,
-                augment=False,
-                target_size=target_size,
-                load_accent=load_accent
-            )
-            print(f"Cached split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
-            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-            return train_loader, val_loader
-
-        # 2. Fallback sang local preprocessed CSV hoặc Hugging Face trực tiếp
         local_train_csv = os.path.join("visec_dataset", "train.csv")
         local_val_csv = os.path.join("visec_dataset", "val.csv")
         
@@ -503,6 +464,7 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
             print(f"Loading local preprocessed datasets from {local_train_csv} and {local_val_csv}...")
             train_ds = ViSECDataset(
                 hf_id=hf_id,
+                target_size=target_size,
                 spec_augment_cfg=spec_augment_cfg,
                 pitch_shift_cfg=pitch_shift_cfg,
                 time_shift_cfg=time_shift_cfg,
@@ -513,6 +475,7 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
             )
             val_ds = ViSECDataset(
                 hf_id=hf_id,
+                target_size=target_size,
                 spec_augment_cfg=spec_augment_cfg,
                 pitch_shift_cfg=pitch_shift_cfg,
                 time_shift_cfg=time_shift_cfg,
@@ -523,8 +486,10 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
             )
             print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
         else:
+            print(f"Loading ViSEC directly from Hugging Face Hub ({hf_id})...")
             dataset = ViSECDataset(
                 hf_id=hf_id, 
+                target_size=target_size,
                 spec_augment_cfg=spec_augment_cfg, 
                 pitch_shift_cfg=pitch_shift_cfg, 
                 time_shift_cfg=time_shift_cfg,
@@ -561,4 +526,6 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
         return train_loader, val_loader
     except Exception as e:
         print(f"Dataset load error: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None
