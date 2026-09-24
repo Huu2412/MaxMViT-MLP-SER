@@ -363,11 +363,14 @@ def train_compare(config_path):
     
     # Load data ONCE (shared across all models)
     logger.info("Loading dataset...")
-    train_loader, val_loader = get_dataloaders(config)
-    if not train_loader:
+    loaders = get_dataloaders(config)
+    if not loaders or loaders[0] is None:
         logger.error("Failed to load data.")
         return
-    logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+    train_loader = loaders[0]
+    val_loader = loaders[1]
+    test_loader = loaders[2] if len(loaders) > 2 else val_loader
+    logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
     
     # Train all 3 models
     model_types = ['original', 'gmu', 'crossattn']

@@ -455,10 +455,11 @@ class CachedViSECDataset(Dataset):
             return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long)
 
 
-def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None, target_size=(224, 224), cache_dir=None):
+def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None, target_size=(224, 224), cache_dir=None, split_ratio=(0.8, 0.1, 0.1)):
     try:
         local_train_csv = os.path.join("visec_dataset", "train.csv")
         local_val_csv = os.path.join("visec_dataset", "val.csv")
+        local_test_csv = os.path.join("visec_dataset", "test.csv")
         
         if os.path.exists(local_train_csv) and os.path.exists(local_val_csv):
             print(f"Loading local preprocessed datasets from {local_train_csv} and {local_val_csv}...")
@@ -484,7 +485,21 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
                 augment=False,
                 waveform_augment_cfg=waveform_augment_cfg
             )
-            print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
+            if os.path.exists(local_test_csv):
+                test_ds = ViSECDataset(
+                    hf_id=hf_id,
+                    target_size=target_size,
+                    spec_augment_cfg=spec_augment_cfg,
+                    pitch_shift_cfg=pitch_shift_cfg,
+                    time_shift_cfg=time_shift_cfg,
+                    load_accent=load_accent,
+                    csv_path=local_test_csv,
+                    augment=False,
+                    waveform_augment_cfg=waveform_augment_cfg
+                )
+            else:
+                test_ds = val_ds
+            print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
         else:
             print(f"Loading ViSEC directly from Hugging Face Hub ({hf_id})...")
             dataset = ViSECDataset(
@@ -497,18 +512,23 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
                 waveform_augment_cfg=waveform_augment_cfg
             )
             
-            # Split indices
+            # Split indices: 80% Train, 10% Val, 10% Test (Configurable via split_ratio)
             full_indices = dataset.indices
             total_len = len(full_indices)
-            val_len = int(total_len * 0.2)
-            train_len = total_len - val_len
+            val_ratio = split_ratio[1] if len(split_ratio) > 1 else 0.1
+            test_ratio = split_ratio[2] if len(split_ratio) > 2 else 0.1
             
-            # Set seed to ensure reproducible train/val splits
+            val_len = int(total_len * val_ratio)
+            test_len = int(total_len * test_ratio)
+            train_len = total_len - val_len - test_len
+            
+            # Set seed to ensure reproducible train/val/test splits
             rng = random.Random(seed)
             rng.shuffle(full_indices)
             
             train_indices = full_indices[:train_len]
-            val_indices = full_indices[train_len:]
+            val_indices = full_indices[train_len:train_len + val_len]
+            test_indices = full_indices[train_len + val_len:]
             
             train_ds = copy.copy(dataset)
             train_ds.indices = train_indices
@@ -518,14 +538,19 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
             val_ds.indices = val_indices
             val_ds.augment = False  # No augment for validation
             
-            print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
+            test_ds = copy.copy(dataset)
+            test_ds.indices = test_indices
+            test_ds.augment = False  # No augment for test
+            
+            print(f"Split complete (80/10/10). Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
         
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
         
-        return train_loader, val_loader
+        return train_loader, val_loader, test_loader
     except Exception as e:
         print(f"Dataset load error: {e}")
         import traceback
         traceback.print_exc()
-        return None, None
+        return None, None, None

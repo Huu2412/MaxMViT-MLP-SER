@@ -29,8 +29,8 @@ def get_dataloaders(config):
     pitch_shift_cfg = ds_config.get('args', {}).get('pitch_shift', None)
     time_shift_cfg = ds_config.get('args', {}).get('time_shift', None)
     waveform_augment_cfg = ds_config.get('args', {}).get('waveform_augment', None)
-    cache_dir = ds_config.get('args', {}).get('cache_dir', None)
     target_size = tuple(ds_config.get('args', {}).get('target_size', [224, 224]))
+    split_ratio = tuple(ds_config.get('args', {}).get('split_ratio', [0.8, 0.1, 0.1]))
 
     # Extract seed from training config (default to 42)
     train_cfg = config.get('training', {})
@@ -57,7 +57,7 @@ def get_dataloaders(config):
         logging.info(f"Shared emotion classes: {shared_class_map}")
 
         # Train loader: ViSEC (train split, with augmentation)
-        train_loader, _ = get_visec_dataloaders(
+        visec_loaders = get_visec_dataloaders(
             hf_id=hf_id,
             batch_size=batch_size,
             num_workers=num_workers,
@@ -67,9 +67,11 @@ def get_dataloaders(config):
             seed=seed,
             load_accent=load_accent,
             waveform_augment_cfg=waveform_augment_cfg,
-            cache_dir=cache_dir,
-            target_size=target_size
+            target_size=target_size,
+            split_ratio=split_ratio
         )
+        train_loader = visec_loaders[0]
+        val_loader = visec_loaders[1]
 
         # Test loader: RAVDESS (full set, no augmentation, filtered to shared classes)
         test_loader = get_ravdess_test_loader(
@@ -80,12 +82,12 @@ def get_dataloaders(config):
             class_map=shared_class_map
         )
 
-        return train_loader, test_loader
+        return train_loader, val_loader, test_loader
 
     # ─── Standard: RAVDESS only ───
     elif name == 'ravdess':
         if not hf_id: hf_id = "TwinkStart/RAVDESS"
-        return get_ravdess_dataloaders(
+        train_loader, val_loader = get_ravdess_dataloaders(
             hf_id=hf_id,
             batch_size=batch_size,
             num_workers=num_workers,
@@ -94,6 +96,7 @@ def get_dataloaders(config):
             time_shift_cfg=time_shift_cfg,
             seed=seed
         )
+        return train_loader, val_loader, val_loader
 
     # ─── Standard: ViSEC only ───
     elif name in ['visec', 'anyf']:
@@ -108,8 +111,8 @@ def get_dataloaders(config):
             seed=seed,
             load_accent=load_accent,
             waveform_augment_cfg=waveform_augment_cfg,
-            cache_dir=cache_dir,
-            target_size=target_size
+            target_size=target_size,
+            split_ratio=split_ratio
         )
 
     else:
@@ -134,10 +137,12 @@ def _build_visec_datasets(config):
     
     aux_cfg = config.get('auxiliary_task', {})
     load_accent = aux_cfg.get('enabled', False) and aux_cfg.get('task', '') == 'accent'
+    split_ratio = tuple(ds_config.get('args', {}).get('split_ratio', [0.8, 0.1, 0.1]))
     target_size = tuple(ds_config.get('args', {}).get('target_size', [224, 224]))
 
     local_train_csv = os.path.join("visec_dataset", "train.csv")
     local_val_csv = os.path.join("visec_dataset", "val.csv")
+    local_test_csv = os.path.join("visec_dataset", "test.csv")
     
     if os.path.exists(local_train_csv) and os.path.exists(local_val_csv):
         print(f"Loading local preprocessed datasets from {local_train_csv} and {local_val_csv}...")
@@ -163,6 +168,20 @@ def _build_visec_datasets(config):
             augment=False,
             waveform_augment_cfg=waveform_augment_cfg
         )
+        if os.path.exists(local_test_csv):
+            test_ds = ViSECDataset(
+                hf_id=hf_id,
+                target_size=target_size,
+                spec_augment_cfg=spec_augment_cfg,
+                pitch_shift_cfg=pitch_shift_cfg,
+                time_shift_cfg=time_shift_cfg,
+                load_accent=load_accent,
+                csv_path=local_test_csv,
+                augment=False,
+                waveform_augment_cfg=waveform_augment_cfg
+            )
+        else:
+            test_ds = val_ds
     else:
         print(f"Loading ViSEC directly from Hugging Face Hub ({hf_id})...")
         dataset = ViSECDataset(
@@ -177,14 +196,18 @@ def _build_visec_datasets(config):
         
         full_indices = dataset.indices
         total_len = len(full_indices)
-        val_len = int(total_len * 0.2)
-        train_len = total_len - val_len
+        val_ratio = split_ratio[1] if len(split_ratio) > 1 else 0.1
+        test_ratio = split_ratio[2] if len(split_ratio) > 2 else 0.1
+        val_len = int(total_len * val_ratio)
+        test_len = int(total_len * test_ratio)
+        train_len = total_len - val_len - test_len
         
         rng = random.Random(seed)
         rng.shuffle(full_indices)
         
         train_indices = full_indices[:train_len]
-        val_indices = full_indices[train_len:]
+        val_indices = full_indices[train_len:train_len + val_len]
+        test_indices = full_indices[train_len + val_len:]
         
         train_ds = copy.copy(dataset)
         train_ds.indices = train_indices
@@ -193,9 +216,13 @@ def _build_visec_datasets(config):
         val_ds = copy.copy(dataset)
         val_ds.indices = val_indices
         val_ds.augment = False
+
+        test_ds = copy.copy(dataset)
+        test_ds.indices = test_indices
+        test_ds.augment = False
     
-    print(f"Split complete. Train: {len(train_ds)}, Val: {len(val_ds)}")
-    return train_ds, val_ds
+    print(f"Split complete (80/10/10). Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
+    return train_ds, val_ds, test_ds
 
 
 def get_dataloaders_ddp(config, rank, world_size):
@@ -215,7 +242,7 @@ def get_dataloaders_ddp(config, rank, world_size):
         world_size: Total number of processes (from dist.get_world_size())
     
     Returns:
-        (train_loader, val_loader, train_sampler)
+        (train_loader, val_loader, test_loader, train_sampler)
         train_sampler is returned so the caller can call set_epoch() each epoch.
     """
     ds_config = config.get('dataset', {})
@@ -232,7 +259,9 @@ def get_dataloaders_ddp(config, rank, world_size):
             shared_classes = ['happy', 'neutral', 'sad', 'angry']
             shared_class_map = {c: i for i, c in enumerate(shared_classes)}
             
-            train_ds, _ = _build_visec_datasets(config)
+            datasets = _build_visec_datasets(config)
+            train_ds = datasets[0]
+            val_ds = datasets[1]
             
             # DistributedSampler for training
             train_sampler = DistributedSampler(
@@ -242,7 +271,10 @@ def get_dataloaders_ddp(config, rank, world_size):
                 train_ds, batch_size=batch_size, sampler=train_sampler,
                 num_workers=num_workers, drop_last=True, pin_memory=True
             )
-            
+            val_loader = DataLoader(
+                val_ds, batch_size=batch_size, shuffle=False,
+                num_workers=num_workers, pin_memory=True
+            )
             # Test on RAVDESS — full dataset, no distributed sampling
             test_loader = get_ravdess_test_loader(
                 hf_id=ravdess_hf_id,
@@ -252,11 +284,11 @@ def get_dataloaders_ddp(config, rank, world_size):
                 class_map=shared_class_map
             )
             
-            return train_loader, test_loader, train_sampler
+            return train_loader, val_loader, test_loader, train_sampler
         
         # ─── Standard: ViSEC only ───
         elif name in ['visec', 'anyf']:
-            train_ds, val_ds = _build_visec_datasets(config)
+            train_ds, val_ds, test_ds = _build_visec_datasets(config)
             
             train_sampler = DistributedSampler(
                 train_ds, num_replicas=world_size, rank=rank, shuffle=True
@@ -269,8 +301,12 @@ def get_dataloaders_ddp(config, rank, world_size):
                 val_ds, batch_size=batch_size, shuffle=False,
                 num_workers=num_workers, pin_memory=True
             )
+            test_loader = DataLoader(
+                test_ds, batch_size=batch_size, shuffle=False,
+                num_workers=num_workers, pin_memory=True
+            )
             
-            return train_loader, val_loader, train_sampler
+            return train_loader, val_loader, test_loader, train_sampler
         
         # ─── Standard: RAVDESS only ───
         elif name == 'ravdess':

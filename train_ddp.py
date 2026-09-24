@@ -193,7 +193,13 @@ def train_ddp(config_path):
                      f"| Grad clip norm: {GRAD_CLIP_NORM} | Checkpoint metric: {CHECKPOINT_METRIC}")
     
     # 3. Data (with DistributedSampler)
-    train_loader, val_loader, train_sampler = get_dataloaders_ddp(config, rank, world_size)
+    loaders = get_dataloaders_ddp(config, rank, world_size)
+    if len(loaders) == 4:
+        train_loader, val_loader, test_loader, train_sampler = loaders
+    else:
+        train_loader, val_loader, train_sampler = loaders
+        test_loader = val_loader
+
     if not train_loader:
         if is_main_process():
             logging.error("Failed to load data.")
@@ -535,13 +541,17 @@ def train_ddp(config_path):
             all_labels = []
             total_time = 0.0
             num_samples_timed = 0
+            eval_target_loader = test_loader if 'test_loader' in locals() and test_loader is not None else val_loader
+            eval_split_name = "TEST Set (Hold-out)" if eval_target_loader is test_loader else "VALIDATION Set"
+            logging.info(f"Running final evaluation on {eval_split_name} ({len(eval_target_loader.dataset)} samples)...")
+            
             with torch.no_grad():
                 cqt_dummy = torch.randn(1, 3, 224, 224).to(device)
                 mel_dummy = torch.randn(1, 3, 224, 224).to(device)
                 for _ in range(5):
                     _ = model(cqt_dummy, mel_dummy)
                     
-                for batch in val_loader:
+                for batch in eval_target_loader:
                     if len(batch) == 4:
                         cqt, mel, label, _ = batch
                     else:
@@ -562,12 +572,13 @@ def train_ddp(config_path):
                     num_samples_timed += cqt.size(0)
                     
             inf_time_sample = (total_time / num_samples_timed) * 1000.0 if num_samples_timed > 0 else 0.0
-            batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else 8
+            batch_size = eval_target_loader.batch_size if hasattr(eval_target_loader, 'batch_size') else 8
             inf_time_batch = inf_time_sample * batch_size
             
             all_preds = np.array(all_preds)
             all_labels = np.array(all_labels)
             
+            test_acc = 100.0 * np.mean(all_preds == all_labels)
             ua = 100.0 * recall_score(all_labels, all_preds, average='macro', zero_division=0)
             mf1 = 100.0 * f1_score(all_labels, all_preds, average='macro', zero_division=0)
             weighted_f1 = 100.0 * f1_score(all_labels, all_preds, average='weighted', zero_division=0)
@@ -585,9 +596,18 @@ def train_ddp(config_path):
                 f.write(f"Checkpoint: {rank1_path}\n")
                 f.write(f"Config: {config_path}\n")
                 f.write(f"Training: {world_size} GPUs (DDP)\n")
-                f.write(f"Validation Accuracy: {top_k_checkpoints[0]['acc']:.2f}%\n")
-                f.write(f"Validation Macro F1: {top_k_checkpoints[0]['f1']:.2f}%\n")
+                f.write(f"Split Mode: 80% Train, 10% Val, 10% Test\n")
+                f.write(f"Evaluation Target: {eval_split_name} ({len(eval_target_loader.dataset)} samples)\n")
+                f.write("-" * 80 + "\n")
+                f.write(f"Validation Accuracy (Best Epoch): {top_k_checkpoints[0]['acc']:.2f}%\n")
+                f.write(f"Validation Macro F1 (Best Epoch): {top_k_checkpoints[0]['f1']:.2f}%\n")
                 f.write(f"Validation Loss: {top_k_checkpoints[0]['loss']:.4f}\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"FINAL INDEPENDENT TEST RESULTS:\n")
+                f.write(f"  Test Accuracy (WA): {test_acc:.2f}%\n")
+                f.write(f"  Test Unweighted Accuracy (UA): {ua:.2f}%\n")
+                f.write(f"  Test Macro F1 (mF1): {mf1:.2f}%\n")
+                f.write(f"  Test Weighted F1: {weighted_f1:.2f}%\n")
                 f.write("=" * 80 + "\n")
                 f.write(final_detailed['summary_text'] + "\n")
                 f.write("=" * 80 + "\n")
@@ -601,9 +621,6 @@ def train_ddp(config_path):
                 f.write(f"Inference Time per batch (size {batch_size}): {inf_time_batch:.2f} ms\n")
                 f.write(f"Inference Time per sample: {inf_time_sample:.2f} ms\n")
                 f.write("-" * 60 + "\n")
-                f.write(f"Unweighted Accuracy (UA/UWA): {ua:.2f}%\n")
-                f.write(f"Macro F1-score (mF1): {mf1:.2f}%\n")
-                f.write(f"Weighted F1-score (F1): {weighted_f1:.2f}%\n")
                 f.write("F1-score per class:\n")
                 f1_per_class = f1_score(all_labels, all_preds, average=None, zero_division=0)
                 for i, name in enumerate(class_names):
@@ -619,15 +636,20 @@ def train_ddp(config_path):
                 json.dump({
                     'checkpoint': rank1_filename,
                     'epoch': top_k_checkpoints[0]['epoch'],
+                    'eval_split': eval_split_name,
                     'val_accuracy': top_k_checkpoints[0]['acc'],
                     'val_macro_f1': top_k_checkpoints[0]['f1'],
                     'val_loss': top_k_checkpoints[0]['loss'],
+                    'test_accuracy': float(test_acc),
+                    'test_macro_f1': float(mf1),
+                    'test_unweighted_accuracy': float(ua),
+                    'test_weighted_f1': float(weighted_f1),
                     'class_names': class_names,
                     'confusion_matrix': final_detailed['confusion_matrix'],
                     'per_class_results': final_detailed['per_class'],
                 }, f, indent=2, ensure_ascii=False)
             logging.info(f"Saved detailed predictions JSON to: {json_path}")
-            logging.info(f"Benchmarks:\nUA/UWA: {ua:.2f}%, mF1: {mf1:.2f}%, F1: {weighted_f1:.2f}%, FLOPs: {flops_str}, Inf time: {inf_time_sample:.2f} ms/sample")
+            logging.info(f"Final Test Results -> Acc: {test_acc:.2f}%, UA: {ua:.2f}%, mF1: {mf1:.2f}%, F1: {weighted_f1:.2f}%")
 
     cleanup_ddp()
 

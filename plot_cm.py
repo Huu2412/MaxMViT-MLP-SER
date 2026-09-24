@@ -29,10 +29,11 @@ def main(config_path, checkpoint_path, output_img):
         config['dataset']['args']['num_workers'] = 0
 
     # Get DataLoaders
-    _, val_loader = get_dataloaders(config)
-    if not val_loader:
-        print("Failed to load validation data.")
+    loaders = get_dataloaders(config)
+    if not loaders or loaders[0] is None:
+        print("Failed to load data.")
         return
+    val_loader = loaders[2] if len(loaders) > 2 else loaders[1]
 
     # Model
     num_classes = model_cfg.get('num_classes', 4)
