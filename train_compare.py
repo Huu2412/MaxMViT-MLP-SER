@@ -39,9 +39,10 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
     """Factory function to get model and optimizer based on model_type."""
     hidden_size = model_cfg.get('hidden_size', 512)
     dropout_rate = model_cfg.get('dropout_rate', 0.2)
+    num_accent_classes = model_cfg.get('num_accent_classes', 0)
     
     if model_type == 'original':
-        model = MaxMViT_MLP(num_classes=num_classes, hidden_size=hidden_size, dropout_rate=dropout_rate)
+        model = MaxMViT_MLP(num_classes=num_classes, hidden_size=hidden_size, dropout_rate=dropout_rate, num_accent_classes=num_accent_classes)
         optimizers = get_optimizer(model, lr=lr)
         
     elif model_type == 'gmu':
@@ -50,7 +51,8 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
             num_classes=num_classes, 
             hidden_size=hidden_size, 
             dropout_rate=dropout_rate,
-            fusion_hidden_dim=fusion_hidden_dim
+            fusion_hidden_dim=fusion_hidden_dim,
+            num_accent_classes=num_accent_classes
         )
         optimizers = get_optimizer_gmu(model, lr=lr)
         
@@ -64,7 +66,8 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
             dropout_rate=dropout_rate,
             fusion_hidden_dim=fusion_hidden_dim,
             num_heads=num_heads,
-            fusion_type=fusion_type
+            fusion_type=fusion_type,
+            num_accent_classes=num_accent_classes
         )
         optimizers = get_optimizer_crossattn(model, lr=lr)
         
@@ -131,12 +134,13 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
         total = 0
         epoch_start = time.time()
         
-        for batch_idx, (cqt, mel, label) in enumerate(train_loader):
-            cqt, mel, label = cqt.to(DEVICE), mel.to(DEVICE), label.to(DEVICE)
+        for batch_idx, batch in enumerate(train_loader):
+            cqt, mel, label = batch[0].to(DEVICE), batch[1].to(DEVICE), batch[2].to(DEVICE)
             
             for opt in optimizers: opt.zero_grad()
             
-            outputs = model(cqt, mel)
+            model_out = model(cqt, mel)
+            outputs = model_out[0] if isinstance(model_out, tuple) else model_out
             loss = criterion(outputs, label)
             loss.backward()
             
@@ -159,9 +163,10 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
         
         model.eval()
         with torch.no_grad():
-            for cqt, mel, label in val_loader:
-                cqt, mel, label = cqt.to(DEVICE), mel.to(DEVICE), label.to(DEVICE)
-                outputs = model(cqt, mel)
+            for batch in val_loader:
+                cqt, mel, label = batch[0].to(DEVICE), batch[1].to(DEVICE), batch[2].to(DEVICE)
+                model_out = model(cqt, mel)
+                outputs = model_out[0] if isinstance(model_out, tuple) else model_out
                 loss = criterion(outputs, label)
                 val_loss += loss.item()
                 _, predicted = outputs.max(1)
@@ -224,10 +229,11 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
         for _ in range(5):
             _ = model(cqt_dummy, mel_dummy)
             
-        for idx, (cqt, mel, label) in enumerate(val_loader):
-            cqt, mel = cqt.to(DEVICE), mel.to(DEVICE)
+        for idx, batch in enumerate(val_loader):
+            cqt, mel, label = batch[0].to(DEVICE), batch[1].to(DEVICE), batch[2]
             start_t = time.time()
-            outputs = model(cqt, mel)
+            model_out = model(cqt, mel)
+            outputs = model_out[0] if isinstance(model_out, tuple) else model_out
             elapsed = time.time() - start_t
             
             if idx < num_batches_to_time:
@@ -236,7 +242,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
                 
             _, predicted = outputs.max(1)
             all_preds.extend(predicted.cpu().numpy())
-            all_labels.extend(label.numpy())
+            all_labels.extend(label.numpy() if hasattr(label, 'numpy') else label)
             
     inf_time_sample = (total_inf_time / num_samples_timed) * 1000.0 if num_samples_timed > 0 else 0.0
     batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else 8
@@ -370,6 +376,11 @@ def train_compare(config_path):
     train_loader = loaders[0]
     val_loader = loaders[1]
     test_loader = loaders[2] if len(loaders) > 2 else val_loader
+    # Pass accent config to model if enabled
+    aux_cfg = config.get('auxiliary_task', {})
+    if aux_cfg.get('enabled', False) and aux_cfg.get('task', '') == 'accent':
+        config['model']['num_accent_classes'] = aux_cfg.get('num_accent_classes', 3)
+
     logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
     
     # Train all 3 models

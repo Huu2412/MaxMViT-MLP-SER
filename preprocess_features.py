@@ -283,21 +283,22 @@ def main():
     with open(metadata_path, 'wb') as f:
         pickle.dump(metadata, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    # ─── Save train/val split indices ───
-    import random
-    rng = random.Random(args.seed)
-    all_indices = list(range(len(metadata)))
-    rng.shuffle(all_indices)
-
-    val_len = int(len(all_indices) * 0.2)
-    train_indices = sorted(all_indices[val_len:])
-    val_indices = sorted(all_indices[:val_len])
+    # ─── Save train/val/test split indices ───
+    from data_loaders.visec import stratified_split_indices
+    items = [(i, m['label'], m.get('accent', -1)) for i, m in enumerate(metadata)]
+    train_items, val_items, test_items = stratified_split_indices(
+        items, split_ratio=(0.8, 0.1, 0.1), seed=args.seed, label_index=1
+    )
+    train_indices = sorted([it[0] for it in train_items])
+    val_indices = sorted([it[0] for it in val_items])
+    test_indices = sorted([it[0] for it in test_items])
 
     split_path = os.path.join(args.output_dir, 'split_indices.pkl')
     with open(split_path, 'wb') as f:
         pickle.dump({
             'train': train_indices,
             'val': val_indices,
+            'test': test_indices,
             'seed': args.seed,
         }, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -317,7 +318,7 @@ def main():
     print(f"  Time elapsed:            {elapsed:.1f}s ({elapsed/max(len(metadata),1):.2f}s/sample)")
     print(f"  Output directory:        {args.output_dir}/")
     print(f"  Total cache size:        {total_size/1024/1024:.1f} MB")
-    print(f"  Train/Val split (seed={args.seed}): {len(train_indices)} / {len(val_indices)}")
+    print(f"  Train/Val/Test split (seed={args.seed}): {len(train_indices)} / {len(val_indices)} / {len(test_indices)}")
 
     from collections import Counter
     emo_counts = Counter(m['emotion'] for m in metadata)

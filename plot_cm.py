@@ -10,7 +10,7 @@ import warnings
 # Suppress librosa n_fft warnings
 warnings.filterwarnings('ignore', message='n_fft=.*is too large for input signal')
 
-from utils import load_config, seed_everything
+from utils import load_config, seed_everything, load_checkpoint
 from data_loaders import get_dataloaders
 from train import get_model_and_optimizer
 
@@ -50,8 +50,7 @@ def main(config_path, checkpoint_path, output_img):
     model.to(DEVICE)
     
     print(f"Loading checkpoint from: {checkpoint_path}")
-    state_dict = torch.load(checkpoint_path, map_location=DEVICE)
-    model.load_state_dict(state_dict)
+    load_checkpoint(checkpoint_path, model, device=DEVICE)
     
     model.eval()
     all_preds = []

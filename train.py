@@ -1,9 +1,11 @@
 
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import argparse
 import torch
 import torch.nn as nn
 import time
-import os
 import logging
 import warnings
 import numpy as np

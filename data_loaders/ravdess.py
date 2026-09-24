@@ -8,6 +8,7 @@ from datasets import load_dataset, Audio
 import logging
 import random
 import copy
+from .visec import stratified_split_indices
 
 class RAVDESSHFDataset(Dataset):
     def __init__(self, hf_id="TwinkStart/RAVDESS", split="ravdess_emo", 
@@ -235,18 +236,10 @@ def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_worke
             time_shift_cfg=time_shift_cfg
         )
         
-        # Manual Split 80/20
-        full_indices = full_ds.indices
-        total = len(full_indices)
-        val_len = int(total * 0.2)
-        train_len = total - val_len
-        
-        # Ensure reproducibility
-        random.seed(seed) 
-        random.shuffle(full_indices)
-        
-        train_indices = full_indices[:train_len]
-        val_indices = full_indices[train_len:]
+        # Stratified Split 80/20
+        train_indices, val_indices, _ = stratified_split_indices(
+            full_ds.indices, split_ratio=(0.8, 0.2), seed=seed, label_index=1
+        )
         
         train_ds = copy.deepcopy(full_ds)
         train_ds.indices = train_indices
@@ -255,8 +248,6 @@ def get_ravdess_dataloaders(hf_id="TwinkStart/RAVDESS", batch_size=16, num_worke
         val_ds = copy.deepcopy(full_ds)
         val_ds.indices = val_indices
         val_ds.augment = False  # No augment for validation
-        
-        print(f"Split RAVDESS: Train {len(train_ds)}, Val {len(val_ds)}")
         
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
         test_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)

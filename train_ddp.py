@@ -8,14 +8,16 @@ Usage on Kaggle (2x T4):
 This wraps the same logic as train.py but distributes across multiple GPUs.
 """
 
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import argparse
+import time
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-import time
-import os
 import logging
 import warnings
 import numpy as np

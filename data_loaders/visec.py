@@ -455,6 +455,102 @@ class CachedViSECDataset(Dataset):
             return dummy_img, dummy_img, torch.tensor(label, dtype=torch.long)
 
 
+def stratified_split_indices(full_indices, split_ratio=(0.8, 0.1, 0.1), seed=42, label_index=1, class_names=None):
+    """
+    Perform reproducible stratified train/val/test split based on class labels.
+    
+    Args:
+        full_indices (list): List of sample items (tuples or dicts).
+        split_ratio (tuple): Ratio for (train, val, test) or (train, val).
+        seed (int): Random seed for reproducibility.
+        label_index (int): Index of class label in item tuple (default: 1).
+        class_names (list): Optional list of class names to display in logs.
+        
+    Returns:
+        tuple: (train_indices, val_indices, test_indices)
+    """
+    from sklearn.model_selection import train_test_split
+    from collections import Counter
+    import logging
+    
+    labels = [item[label_index] for item in full_indices]
+    
+    val_ratio = split_ratio[1] if len(split_ratio) > 1 else 0.1
+    test_ratio = split_ratio[2] if len(split_ratio) > 2 else 0.0
+    eval_ratio = val_ratio + test_ratio
+    
+    try:
+        if test_ratio > 0.0:
+            # 3-way split: Train, Val, Test
+            train_indices, eval_indices = train_test_split(
+                full_indices,
+                test_size=eval_ratio,
+                random_state=seed,
+                stratify=labels
+            )
+            eval_labels = [item[label_index] for item in eval_indices]
+            relative_test_ratio = test_ratio / eval_ratio
+            
+            val_indices, test_indices = train_test_split(
+                eval_indices,
+                test_size=relative_test_ratio,
+                random_state=seed,
+                stratify=eval_labels
+            )
+        else:
+            # 2-way split: Train, Val (Test is identical to Val)
+            train_indices, val_indices = train_test_split(
+                full_indices,
+                test_size=val_ratio,
+                random_state=seed,
+                stratify=labels
+            )
+            test_indices = val_indices
+            
+        def _format_counts(indices_list):
+            counts = Counter(item[label_index] for item in indices_list)
+            total = len(indices_list)
+            parts = []
+            for k in sorted(counts.keys()):
+                name = class_names[k] if class_names and k < len(class_names) else f"class_{k}"
+                c = counts[k]
+                pct = (c / total * 100.0) if total > 0 else 0.0
+                parts.append(f"{name}: {c} ({pct:.1f}%)")
+            return ", ".join(parts)
+
+        tot_samples = len(full_indices)
+        msg_lines = [
+            f"[Stratified Split] Thành công (Seed {seed}) | Tổng: {tot_samples} samples",
+            f"  ├─ Train: {len(train_indices):>4d} ({len(train_indices)/tot_samples*100:.1f}%) | {_format_counts(train_indices)}",
+            f"  ├─ Val:   {len(val_indices):>4d} ({len(val_indices)/tot_samples*100:.1f}%) | {_format_counts(val_indices)}",
+        ]
+        if test_ratio > 0.0:
+            msg_lines.append(f"  └─ Test:  {len(test_indices):>4d} ({len(test_indices)/tot_samples*100:.1f}%) | {_format_counts(test_indices)}")
+        else:
+            msg_lines[-1] = msg_lines[-1].replace("├─ Val:", "└─ Val:")
+            
+        summary_log = "\n" + "\n".join(msg_lines)
+        print(summary_log)
+        logging.info(summary_log)
+            
+    except Exception as e:
+        print(f"[Warning] Stratified split failed ({e}), falling back to random shuffle split.")
+        rng = random.Random(seed)
+        shuffled = list(full_indices)
+        rng.shuffle(shuffled)
+        
+        total_len = len(shuffled)
+        val_len = int(total_len * val_ratio)
+        test_len = int(total_len * test_ratio)
+        train_len = total_len - val_len - test_len
+        
+        train_indices = shuffled[:train_len]
+        val_indices = shuffled[train_len:train_len + val_len]
+        test_indices = shuffled[train_len + val_len:] if test_len > 0 else val_indices
+
+    return train_indices, val_indices, test_indices
+
+
 def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None, seed=42, load_accent=False, waveform_augment_cfg=None, target_size=(224, 224), cache_dir=None, split_ratio=(0.8, 0.1, 0.1)):
     try:
         local_train_csv = os.path.join("visec_dataset", "train.csv")
@@ -512,23 +608,11 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
                 waveform_augment_cfg=waveform_augment_cfg
             )
             
-            # Split indices: 80% Train, 10% Val, 10% Test (Configurable via split_ratio)
-            full_indices = dataset.indices
-            total_len = len(full_indices)
-            val_ratio = split_ratio[1] if len(split_ratio) > 1 else 0.1
-            test_ratio = split_ratio[2] if len(split_ratio) > 2 else 0.1
-            
-            val_len = int(total_len * val_ratio)
-            test_len = int(total_len * test_ratio)
-            train_len = total_len - val_len - test_len
-            
-            # Set seed to ensure reproducible train/val/test splits
-            rng = random.Random(seed)
-            rng.shuffle(full_indices)
-            
-            train_indices = full_indices[:train_len]
-            val_indices = full_indices[train_len:train_len + val_len]
-            test_indices = full_indices[train_len + val_len:]
+            # Stratified split: Train, Val, Test (Configurable via split_ratio)
+            train_indices, val_indices, test_indices = stratified_split_indices(
+                dataset.indices, split_ratio=split_ratio, seed=seed, label_index=1,
+                class_names=getattr(dataset, 'target_classes', None)
+            )
             
             train_ds = copy.copy(dataset)
             train_ds.indices = train_indices
@@ -541,8 +625,6 @@ def get_visec_dataloaders(hf_id="hustep-lab/ViSEC", batch_size=16, num_workers=4
             test_ds = copy.copy(dataset)
             test_ds.indices = test_indices
             test_ds.augment = False  # No augment for test
-            
-            print(f"Split complete (80/10/10). Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
         
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)

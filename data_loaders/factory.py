@@ -5,7 +5,7 @@ import copy
 import random
 from torch.utils.data import DataLoader, DistributedSampler
 from .ravdess import get_ravdess_dataloaders, get_ravdess_test_loader, RAVDESSHFDataset
-from .visec import get_visec_dataloaders, ViSECDataset, CachedViSECDataset
+from .visec import get_visec_dataloaders, ViSECDataset, CachedViSECDataset, stratified_split_indices
 
 def get_dataloaders(config):
     """
@@ -194,20 +194,10 @@ def _build_visec_datasets(config):
             waveform_augment_cfg=waveform_augment_cfg
         )
         
-        full_indices = dataset.indices
-        total_len = len(full_indices)
-        val_ratio = split_ratio[1] if len(split_ratio) > 1 else 0.1
-        test_ratio = split_ratio[2] if len(split_ratio) > 2 else 0.1
-        val_len = int(total_len * val_ratio)
-        test_len = int(total_len * test_ratio)
-        train_len = total_len - val_len - test_len
-        
-        rng = random.Random(seed)
-        rng.shuffle(full_indices)
-        
-        train_indices = full_indices[:train_len]
-        val_indices = full_indices[train_len:train_len + val_len]
-        test_indices = full_indices[train_len + val_len:]
+        train_indices, val_indices, test_indices = stratified_split_indices(
+            dataset.indices, split_ratio=split_ratio, seed=seed, label_index=1,
+            class_names=getattr(dataset, 'target_classes', None)
+        )
         
         train_ds = copy.copy(dataset)
         train_ds.indices = train_indices
@@ -220,8 +210,6 @@ def _build_visec_datasets(config):
         test_ds = copy.copy(dataset)
         test_ds.indices = test_indices
         test_ds.augment = False
-    
-    print(f"Split complete (80/10/10). Train: {len(train_ds)}, Val: {len(val_ds)}, Test: {len(test_ds)}")
     return train_ds, val_ds, test_ds
 
 
@@ -323,16 +311,9 @@ def get_dataloaders_ddp(config, rank, world_size):
                 time_shift_cfg=time_shift_cfg
             )
             
-            full_indices = full_ds.indices
-            total = len(full_indices)
-            val_len = int(total * 0.2)
-            train_len = total - val_len
-            
-            rng = random.Random(seed)
-            rng.shuffle(full_indices)
-            
-            train_indices = full_indices[:train_len]
-            val_indices = full_indices[train_len:]
+            train_indices, val_indices, _ = stratified_split_indices(
+                full_ds.indices, split_ratio=(0.8, 0.2), seed=seed, label_index=1
+            )
             
             train_ds = copy.deepcopy(full_ds)
             train_ds.indices = train_indices

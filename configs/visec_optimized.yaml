@@ -13,7 +13,7 @@ dataset:
   name: "visec"
   args:
     hf_id: "hustep-lab/ViSEC"
-    batch_size: 8                  # Kaggle GPU memory limit (OOM with 16 → NaN loss)
+    batch_size: 4                  # 4 per GPU to prevent CUDA OOM on T4 (15GB) with dual backbones
     num_workers: 4
     split_ratio: [0.8, 0.1, 0.1]   # 80% Train, 10% Val, 10% Test (Scientific paper standard)
     target_size: [224, 224]        # was [244,244]: model always interpolates to 224 anyway,
@@ -51,17 +51,23 @@ model:
 
  
 training:
-  epochs: 50                       # was 30: increased per user request
-  lr: 0.0002                       # fallback LR if backbone_lr/head_lr are unset
-
-  # --- Discriminative learning rates (NEW) ---
-  backbone_lr: 0.0001             # low LR for pretrained MaxViT/MViTv2 (fine-tuning only)
-  head_lr: 0.0005                  # higher LR for randomly-initialized fusion + MLP head
-
-  
-  patience: 10
+  epochs: 50                       # 50 epochs
+  patience: 10                     # Early stopping patience
   seed: 42
   device: "cuda"
+
+  # Fallback learning rate
+  lr: 0.0002
+
+  # --- Discriminative learning rates ---
+  backbone_lr: 0.0001             # Lower LR for pretrained MaxViT & MViTv2
+  head_lr: 0.0005                  # Higher LR for GMU fusion & classification heads
+
+  # --- Acceleration & Regularization ---
+  amp: true                        # Automatic Mixed Precision (FP16) - cuts VRAM by 50% and speeds up training
+  label_smoothing: 0.05            # Regularization against overfitting
+  class_weight: true               # Dynamic class weighting for balanced loss
+  grad_clip_norm: 1.0              # Gradient clipping to prevent gradient explosion
 
   # --- Checkpoint selection (NEW) ---
   checkpoint_metric: "macro_f1"    # was implicitly val_acc: macro_f1 is robust to

@@ -235,16 +235,17 @@ def create_val_loader(config, custom_seed=None):
 
     print(f"Filtered {len(all_indices)} samples")
 
-    # Split (same as get_visec_dataloaders)
-    total_len = len(all_indices)
-    val_len = int(total_len * 0.2)
-    rng = random.Random(seed)
-    rng.shuffle(all_indices)
-    val_indices = all_indices[total_len - val_len:]
+    # Stratified Split (same as get_visec_dataloaders)
+    split_ratio = tuple(args.get('split_ratio', [0.8, 0.1, 0.1]))
+    from data_loaders.visec import stratified_split_indices
+    _, val_indices, test_indices = stratified_split_indices(
+        all_indices, split_ratio=split_ratio, seed=seed, label_index=1
+    )
 
-    print(f"Val split: {len(val_indices)} samples")
+    eval_indices = val_indices
+    print(f"Val split: {len(eval_indices)} samples")
 
-    val_ds = LightweightViSECDataset(table, val_indices, target_size=target_size)
+    val_ds = LightweightViSECDataset(table, eval_indices, target_size=target_size)
     val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
     return val_loader
 
