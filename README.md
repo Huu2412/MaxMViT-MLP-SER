@@ -25,6 +25,7 @@ Official implementation of **MaxMViT-SER**: an advanced deep learning framework 
   - [2. Model Variants Comparison & Ablation](#2-model-variants-comparison--ablation)
   - [3. Cross-Dataset Generalization](#3-cross-dataset-generalization)
   - [4. Averaged Confusion Matrix & Checkpoint Evaluation](#4-averaged-confusion-matrix--checkpoint-evaluation)
+  - [5. ViSEC Pitch-Fusion Baseline (ICASSP 2024)](#5-visec-pitch-fusion-baseline-icassp-2024)
 - [Experimental Results & Benchmarks](#-experimental-results--benchmarks)
 - [Citation & References](#-citation--references)
 - [License](#-license)
@@ -291,6 +292,23 @@ python plot_cm_avg.py --config configs/visec_optimized.yaml --results_dir Result
 This generates:
 - `Results/avg_confusion_matrix_avg_normalized.png`: Percentage normalized confusion matrix with $\mu \pm \sigma$.
 - `Results/avg_confusion_matrix_avg_raw.png`: Raw count confusion matrix.
+
+### 5. ViSEC Pitch-Fusion Baseline (ICASSP 2024)
+
+To train and evaluate the official baseline model from [thanhpv2102/ViSEC](https://github.com/thanhpv2102/ViSEC.git) (**A robust Pitch-fusion model for Speech Emotion Recognition in tonal languages**, ICASSP 2024) on the exact same 80/10/10 split:
+
+```bash
+# Huấn luyện mô hình Pitch-Fusion (Wav2Vec2 + Kaldi/Interpolated Pitch):
+python run_visec_baseline.py --mode train_pitch --batch_size 4 --grad_accum 2 --epochs 30 --fp16
+
+# Hoặc huấn luyện mô hình Baseline Wav2Vec 2.0 (không có Pitch):
+python run_visec_baseline.py --mode train_no_joint --batch_size 4 --grad_accum 2 --epochs 30 --fp16
+
+# Hoặc xuất dataset thành train.csv, valid.csv, test.csv và các file WAV nội bộ:
+python run_visec_baseline.py --mode export --output_dir visec_dataset
+```
+
+> **Lưu ý Cloud:** Bạn có thể mở trực tiếp file [`Train_ViSEC_Pitch_Colab.ipynb`](Train_ViSEC_Pitch_Colab.ipynb) trên Google Colab / Kaggle với GPU T4 để chạy 1-click.
 
 ---
 
