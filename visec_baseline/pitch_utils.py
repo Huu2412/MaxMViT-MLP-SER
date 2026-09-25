@@ -19,13 +19,14 @@ except Exception:
         _KALDI_AVAILABLE = False
 
 
-def extract_audio_and_pitch(speech_tensor: torch.Tensor, sr: int, target_sr: int = 16000):
+def extract_audio_and_pitch(speech_tensor: torch.Tensor, sr: int, target_sr: int = 16000, max_duration: float = 8.0):
     """
     Extracts 16kHz normalized mono audio and interpolated pitch sequence.
     
     Compatible across all versions of torchaudio:
     - Uses Kaldi pitch if available (torchaudio <= 2.0).
     - Uses torchaudio.functional.detect_pitch_frequency or librosa.yin as fallback (torchaudio >= 2.1).
+    - Caps audio duration to max_duration (default 8.0s) to prevent CUDA OOM on long outliers.
     
     Returns:
         speech_array (np.ndarray): 1D float32 waveform at target_sr.
@@ -51,6 +52,12 @@ def extract_audio_and_pitch(speech_tensor: torch.Tensor, sr: int, target_sr: int
         resampler = torchaudio.transforms.Resample(sr, target_sr)
         speech_tensor = resampler(speech_tensor)
         sr = target_sr
+
+    # Cap max duration to prevent CUDA OOM on extreme outlier long audios
+    if max_duration is not None and max_duration > 0:
+        max_samples = int(max_duration * target_sr)
+        if speech_tensor.shape[1] > max_samples:
+            speech_tensor = speech_tensor[:, :max_samples]
 
     waveform_length = speech_tensor.shape[1]
     

@@ -4,6 +4,8 @@ Supports both local CSVs (visec_dataset/) and direct Hugging Face Hub (hustep-la
 """
 
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import sys
 import json
 import argparse
@@ -46,8 +48,10 @@ def parse_args():
     parser.add_argument("--processor_name", type=str, default="facebook/wav2vec2-base-100h", help="Processor / Feature Extractor name")
     parser.add_argument("--output_dir", type=str, default="checkpoints/visec_pitch_baseline", help="Directory to save checkpoints")
     parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=4, help="Per-device batch size")
-    parser.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps")
+    parser.add_argument("--batch_size", type=int, default=2, help="Per-device batch size (default 2 to prevent CUDA OOM)")
+    parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation steps (default 4 -> effective BS 8)")
+    parser.add_argument("--max_duration", type=float, default=8.0, help="Max audio duration in seconds to cap outliers (default 8.0s)")
+    parser.add_argument("--gradient_checkpointing", action="store_true", default=True, help="Enable gradient checkpointing to save VRAM")
     parser.add_argument("--lr", type=float, default=1.5e-5, help="Learning rate")
     parser.add_argument("--num_proc", type=int, default=4, help="Preprocessing worker processes")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for data split and training")
@@ -74,13 +78,15 @@ def main():
         csv_dir=args.csv_dir,
         split_ratio=(0.8, 0.1, 0.1),
         seed=args.seed,
-        num_proc=args.num_proc
+        num_proc=args.num_proc,
+        max_duration=args.max_duration
     )
     
     # 2. Processor & Data Collator
     print(f"[Init] Loading processor '{args.processor_name}'...")
     processor = Wav2Vec2Processor.from_pretrained(args.processor_name)
-    data_collator = ViSECPitchDataCollator(processor=processor)
+    max_samples = int(args.max_duration * 16000)
+    data_collator = ViSECPitchDataCollator(processor=processor, max_length=max_samples)
 
     # 3. Model Initialization
     print(f"[Init] Loading model from '{args.pretrained_model}'...")
@@ -97,6 +103,10 @@ def main():
     )
     model.freeze_feature_extractor()
     print("[Init] Feature extractor frozen successfully.")
+
+    if args.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        print("[Init] Gradient checkpointing enabled (VRAM usage reduced by ~60%).")
 
     # 4. Training Arguments with backward/forward compatibility
     eval_arg_name = "eval_strategy" if "eval_strategy" in inspect.signature(TrainingArguments.__init__).parameters else "evaluation_strategy"
@@ -119,6 +129,7 @@ def main():
         "metric_for_best_model": "macro_f1",
         "greater_is_better": True,
         "fp16": args.fp16,
+        "gradient_checkpointing": args.gradient_checkpointing,
         "report_to": "none",
         "seed": args.seed
     }

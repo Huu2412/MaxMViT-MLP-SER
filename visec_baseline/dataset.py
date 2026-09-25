@@ -45,10 +45,10 @@ def stratified_split(indices_and_labels: List[Tuple[int, int]], split_ratio: Tup
     return train_idx, val_idx, test_idx
 
 
-def _process_audio_item(audio_data: Any, default_sr: int = 16000) -> Tuple[np.ndarray, np.ndarray]:
+def _process_audio_item(audio_data: Any, default_sr: int = 16000, max_duration: float = 8.0) -> Tuple[np.ndarray, np.ndarray]:
     """
     Decodes audio from various formats (bytes, file path, dict, array)
-    and extracts 16kHz audio array and pitch array.
+    and extracts 16kHz audio array and pitch array, capped to max_duration.
     """
     speech_tensor = None
     orig_sr = default_sr
@@ -70,7 +70,7 @@ def _process_audio_item(audio_data: Any, default_sr: int = 16000) -> Tuple[np.nd
     else:
         raise ValueError(f"Unsupported audio data format: {type(audio_data)}")
         
-    return extract_audio_and_pitch(speech_tensor, orig_sr, target_sr=16000)
+    return extract_audio_and_pitch(speech_tensor, orig_sr, target_sr=16000, max_duration=max_duration)
 
 
 def load_visec_datasets(
@@ -79,11 +79,13 @@ def load_visec_datasets(
     split_ratio: Tuple[float, float, float] = (0.8, 0.1, 0.1),
     seed: int = 42,
     num_proc: int = 4,
-    cache_dir: Optional[str] = None
+    cache_dir: Optional[str] = None,
+    max_duration: float = 8.0
 ):
     """
     Loads ViSEC datasets (Train, Val, Test) for the Pitch-Fusion model.
     Supports either local CSVs (train.csv, valid.csv, test.csv) or Hugging Face hub.
+    Caps max audio duration (default 8.0s) to guarantee no CUDA OOM.
     """
     # ── Option 1: Load from local CSV directory if available ──
     if csv_dir is not None and os.path.exists(os.path.join(csv_dir, "train.csv")):
@@ -97,7 +99,7 @@ def load_visec_datasets(
         raw_test = load_dataset("csv", data_files=test_csv, split="train") if os.path.exists(test_csv) else raw_val
         
         def _map_csv_row(batch):
-            audio, pitch = _process_audio_item(batch["path"])
+            audio, pitch = _process_audio_item(batch["path"], max_duration=max_duration)
             label = batch["emotion_id"] if "emotion_id" in batch else CLASS_MAP.get(str(batch["emotion"]).lower().strip(), 0)
             return {"audio_input": audio, "pitch_input": pitch, "label": label}
             
@@ -130,12 +132,12 @@ def load_visec_datasets(
     test_raw = raw_ds.select([it for it in test_indices])
     
     def _map_hf_row(batch):
-        audio, pitch = _process_audio_item(batch["path"])
+        audio, pitch = _process_audio_item(batch["path"], max_duration=max_duration)
         emo_str = str(batch["emotion"]).lower().strip()
         label = CLASS_MAP.get(emo_str, 0)
         return {"audio_input": audio, "pitch_input": pitch, "label": label}
         
-    print(f"[Dataset] Extracting features (audio + pitch) with {num_proc} processes...")
+    print(f"[Dataset] Extracting features (audio + pitch) with max_duration={max_duration}s (num_proc={num_proc})...")
     train_ds = train_raw.map(_map_hf_row, num_proc=num_proc)
     val_ds = val_raw.map(_map_hf_row, num_proc=num_proc)
     test_ds = test_raw.map(_map_hf_row, num_proc=num_proc)
@@ -147,19 +149,22 @@ class ViSECPitchDataCollator:
     """
     Collator to pad audio and pitch tensors to batch maximum length.
     """
-    def __init__(self, processor):
+    def __init__(self, processor, max_length: Optional[int] = None):
         self.processor = processor
+        self.max_length = max_length
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         audio_inputs = self.processor.pad(
             [{"input_values": example["audio_input"]} for example in examples],
             return_tensors="pt",
-            padding=True
+            padding=True,
+            max_length=self.max_length
         )
         pitch_inputs = self.processor.pad(
             [{"input_values": example["pitch_input"]} for example in examples],
             return_tensors="pt",
-            padding=True
+            padding=True,
+            max_length=self.max_length
         )
         labels = torch.tensor([example["label"] for example in examples], dtype=torch.long)
         

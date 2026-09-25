@@ -72,11 +72,19 @@ class Wav2Vec2CrossAttentionPitchForSER(Wav2Vec2PreTrainedModel):
         self.projector = nn.Linear(config.hidden_size * 2, proj_size)
         self.classifier = nn.Linear(proj_size, config.num_labels)
         
-        self.post_init()
-        
+    supports_gradient_checkpointing = True
+
     def freeze_feature_extractor(self):
         """Freezes feature encoder of wav2vec2 as recommended in fine-tuning."""
         self.wav2vec2.feature_extractor._freeze_parameters()
+
+    def _set_gradient_checkpointing(self, module, value=False):
+        if hasattr(self, 'wav2vec2'):
+            self.wav2vec2.gradient_checkpointing = value
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        if hasattr(self, 'wav2vec2'):
+            self.wav2vec2.gradient_checkpointing_enable(**kwargs)
 
     def _extract_tensor(self, inp: Any) -> torch.Tensor:
         """Safely extracts input_values tensor regardless of BatchFeature or dict format."""
