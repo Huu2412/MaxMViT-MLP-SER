@@ -277,8 +277,8 @@ class ViSECDataset(Dataset):
             cqt_img = self._resize_normalize(cqt_db)            
             mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
             
-            cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)
-            mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
+            cqt_tensor = torch.nan_to_num(torch.tensor(cqt_img, dtype=torch.float32), nan=0.0, posinf=0.0, neginf=0.0)
+            mel_tensor = torch.nan_to_num(torch.tensor(mel_img, dtype=torch.float32), nan=0.0, posinf=0.0, neginf=0.0)
             
             if self.load_accent:
                 return cqt_tensor, mel_tensor, torch.tensor(label, dtype=torch.long), torch.tensor(accent_label, dtype=torch.long)
@@ -294,23 +294,27 @@ class ViSECDataset(Dataset):
         if isinstance(spec, (list, tuple)):
             channels = []
             for s in spec:
+                s = np.nan_to_num(s, nan=0.0, posinf=0.0, neginf=-80.0)
                 s_min = s.min()
                 s_max = s.max()
-                s_norm = (s - s_min) / (s_max - s_min + 1e-8)
+                denom = s_max - s_min
+                s_norm = (s - s_min) / (denom + 1e-8) if denom > 1e-8 else np.zeros_like(s)
                 s_resized = cv2.resize(s_norm, (self.target_size[1], self.target_size[0]))
                 channels.append(s_resized)
             spec_3ch = np.stack(channels, axis=0)
         else:
-            spec_min = spec.min()
-            spec_max = spec.max()
-            spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
+            s = np.nan_to_num(spec, nan=0.0, posinf=0.0, neginf=-80.0)
+            spec_min = s.min()
+            spec_max = s.max()
+            denom = spec_max - spec_min
+            spec_norm = (s - spec_min) / (denom + 1e-8) if denom > 1e-8 else np.zeros_like(s)
             spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
             spec_3ch = np.stack([spec_resized]*3, axis=0)
             
         for i in range(3):
             spec_3ch[i] = (spec_3ch[i] - self.mean[i]) / self.std[i]
             
-        return spec_3ch
+        return np.nan_to_num(spec_3ch, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _spec_augment(self, spec):
         """

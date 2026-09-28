@@ -136,8 +136,8 @@ class SERDataset(Dataset):
         mel_img = self._resize_normalize([mel_db, mel_delta, mel_delta2])
         
         # To Tensor [3, H, W]
-        cqt_tensor = torch.tensor(cqt_img, dtype=torch.float32)
-        mel_tensor = torch.tensor(mel_img, dtype=torch.float32)
+        cqt_tensor = torch.nan_to_num(torch.tensor(cqt_img, dtype=torch.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        mel_tensor = torch.nan_to_num(torch.tensor(mel_img, dtype=torch.float32), nan=0.0, posinf=0.0, neginf=0.0)
         
         return cqt_tensor, mel_tensor, torch.tensor(label, dtype=torch.long)
         
@@ -171,18 +171,22 @@ class SERDataset(Dataset):
         if isinstance(spec, (list, tuple)):
             channels = []
             for s in spec:
+                s = np.nan_to_num(s, nan=0.0, posinf=0.0, neginf=-80.0)
                 s_min = s.min()
                 s_max = s.max()
-                s_norm = (s - s_min) / (s_max - s_min + 1e-8)
+                denom = s_max - s_min
+                s_norm = (s - s_min) / (denom + 1e-8) if denom > 1e-8 else np.zeros_like(s)
                 s_resized = cv2.resize(s_norm, (self.target_size[1], self.target_size[0]))
                 channels.append(s_resized)
-            return np.stack(channels, axis=0)
+            return np.nan_to_num(np.stack(channels, axis=0), nan=0.0, posinf=0.0, neginf=0.0)
         else:
-            spec_min = spec.min()
-            spec_max = spec.max()
-            spec_norm = (spec - spec_min) / (spec_max - spec_min + 1e-8)
+            s = np.nan_to_num(spec, nan=0.0, posinf=0.0, neginf=-80.0)
+            spec_min = s.min()
+            spec_max = s.max()
+            denom = spec_max - spec_min
+            spec_norm = (s - spec_min) / (denom + 1e-8) if denom > 1e-8 else np.zeros_like(s)
             spec_resized = cv2.resize(spec_norm, (self.target_size[1], self.target_size[0]))
-            return np.stack([spec_resized]*3, axis=0)
+            return np.nan_to_num(np.stack([spec_resized]*3, axis=0), nan=0.0, posinf=0.0, neginf=0.0)
 
 def get_dataloader(paths, labels, batch_size=32, shuffle=True, augment=False, spec_augment_cfg=None, pitch_shift_cfg=None, time_shift_cfg=None):
     dataset = SERDataset(paths, labels, augment=augment, spec_augment_cfg=spec_augment_cfg, pitch_shift_cfg=pitch_shift_cfg, time_shift_cfg=time_shift_cfg)

@@ -188,17 +188,26 @@ def train_single_model(model_type, config, train_loader, val_loader, logger, bac
         
         for batch_idx, batch in enumerate(train_loader):
             cqt, mel, label = batch[0].to(DEVICE), batch[1].to(DEVICE), batch[2].to(DEVICE)
+            cqt = torch.nan_to_num(cqt, nan=0.0, posinf=0.0, neginf=0.0)
+            mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
             
             for opt in optimizers: opt.zero_grad()
             
             model_out = model(cqt, mel)
             outputs = model_out[0] if isinstance(model_out, tuple) else model_out
             loss = criterion(outputs, label)
+            
+            if not torch.isfinite(loss):
+                continue
+                
             loss.backward()
             
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
-            for opt in optimizers: opt.step()
+            has_inf_or_nan = any(not torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+            if not has_inf_or_nan:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                for opt in optimizers: opt.step()
+            else:
+                for opt in optimizers: opt.zero_grad()
             
             total_loss += loss.item()
             _, predicted = outputs.max(1)

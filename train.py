@@ -326,6 +326,8 @@ def train(config_path):
         total_loss = 0
         total_loss_emo = 0
         total_loss_acc = 0
+        valid_batches_count = 0
+        accent_batches_count = 0
         correct = 0
         total = 0
         start_time = time.time()
@@ -341,6 +343,10 @@ def train(config_path):
                 accent_label = None
             cqt, mel, label = cqt.to(DEVICE), mel.to(DEVICE), label.to(DEVICE)
             
+            # Sanitize inputs to prevent NaNs/Infs entering the network
+            cqt = torch.nan_to_num(cqt, nan=0.0, posinf=0.0, neginf=0.0)
+            mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
+            
             for opt in optimizers: opt.zero_grad()
             
             # Forward pass (autocast is a no-op when USE_AMP=False)
@@ -354,31 +360,63 @@ def train(config_path):
 
                 # Primary loss (Emotion)
                 loss_emo = criterion(outputs, label)
+                if not torch.isfinite(loss_emo):
+                    logging.warning(f"Epoch {epoch+1} Batch {batch_idx}: Non-finite loss_emo ({loss_emo.item() if hasattr(loss_emo, 'item') else loss_emo}). Skipping batch.")
+                    for opt in optimizers: opt.zero_grad()
+                    continue
                 loss = loss_emo
 
-                # Auxiliary loss (Accent)
+                # Auxiliary loss (Accent) - Strictly filter valid classes: 0 <= acc < num_accent_classes
                 loss_acc_value = 0.0
                 if criterion_accent is not None and accent_logits is not None and accent_label is not None:
-                    # Only compute accent loss for samples with valid accent labels
-                    valid_mask = accent_label != -1
+                    valid_mask = (accent_label >= 0) & (accent_label < num_accent_classes)
                     if valid_mask.any():
                         loss_acc = criterion_accent(accent_logits[valid_mask], accent_label[valid_mask])
-                        loss = loss_emo + aux_alpha * loss_acc
-                        loss_acc_value = loss_acc.item()
+                        if torch.isfinite(loss_acc):
+                            loss = loss_emo + aux_alpha * loss_acc
+                            loss_acc_value = loss_acc.item()
+                        else:
+                            logging.warning(f"Epoch {epoch+1} Batch {batch_idx}: Non-finite loss_acc ({loss_acc.item()}). Ignoring accent loss for this batch.")
 
-            scaler.scale(loss).backward()
+            if not torch.isfinite(loss):
+                logging.warning(f"Epoch {epoch+1} Batch {batch_idx}: Non-finite combined loss. Skipping backward pass.")
+                for opt in optimizers: opt.zero_grad()
+                continue
 
-            # Unscale once for ALL optimizers before clipping, then step each
-            for opt in optimizers:
-                scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP_NORM)
-            for opt in optimizers:
-                scaler.step(opt)
-            scaler.update()
+            if USE_AMP:
+                scaler.scale(loss).backward()
+                for opt in optimizers:
+                    scaler.unscale_(opt)
+                
+                # Check for inf/nan gradients across all parameters BEFORE clipping.
+                # Calling clip_grad_norm_ when grads have inf produces NaNs (inf * 0.0 = NaN)!
+                has_inf_or_nan = any(not torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+                if not has_inf_or_nan:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP_NORM)
+                else:
+                    logging.debug(f"Epoch {epoch+1} Batch {batch_idx}: Inf/NaN gradients detected in AMP. Skipping clip_grad_norm_ to allow scaler backoff.")
+                
+                for opt in optimizers:
+                    scaler.step(opt)
+                scaler.update()
+            else:
+                loss.backward()
+                has_inf_or_nan = any(not torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+                if not has_inf_or_nan:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP_NORM)
+                    for opt in optimizers:
+                        opt.step()
+                else:
+                    logging.warning(f"Epoch {epoch+1} Batch {batch_idx}: Inf/NaN gradients detected without AMP. Skipping step.")
+                    for opt in optimizers: opt.zero_grad()
             
             total_loss += loss.item()
             total_loss_emo += loss_emo.item()
-            total_loss_acc += loss_acc_value
+            if loss_acc_value > 0.0:
+                total_loss_acc += loss_acc_value
+                accent_batches_count += 1
+            valid_batches_count += 1
+            
             _, predicted = outputs.max(1)
             total += label.size(0)
             correct += predicted.eq(label).sum().item()
@@ -388,11 +426,12 @@ def train(config_path):
                  logging.debug(f"Batch {batch_idx}: Loss {loss.item():.4f}")
 
         # Epoch Metrics
-        train_loss = total_loss / len(train_loader)
-        train_acc = 100. * correct / total
+        train_loss = total_loss / max(1, valid_batches_count)
+        train_acc = 100. * correct / max(1, total)
         
         # Validation
         val_loss = 0
+        val_batches_count = 0
         val_correct = 0
         val_total = 0
         val_preds = []
@@ -406,6 +445,8 @@ def train(config_path):
                     else:
                         cqt, mel, label = batch
                     cqt, mel, label = cqt.to(DEVICE), mel.to(DEVICE), label.to(DEVICE)
+                    cqt = torch.nan_to_num(cqt, nan=0.0, posinf=0.0, neginf=0.0)
+                    mel = torch.nan_to_num(mel, nan=0.0, posinf=0.0, neginf=0.0)
                     
                     with torch.amp.autocast('cuda', enabled=USE_AMP):
                         model_output = model(cqt, mel)
@@ -415,15 +456,17 @@ def train(config_path):
                             outputs = model_output
                         loss = criterion(outputs, label)
 
-                    val_loss += loss.item()
+                    if torch.isfinite(loss):
+                        val_loss += loss.item()
+                        val_batches_count += 1
                     _, predicted = outputs.max(1)
                     val_total += label.size(0)
                     val_correct += predicted.eq(label).sum().item()
                     val_preds.extend(predicted.cpu().numpy())
                     val_labels.extend(label.cpu().numpy())
             
-            val_loss /= len(val_loader)
-            val_acc = 100. * val_correct / val_total
+            val_loss = val_loss / max(1, val_batches_count)
+            val_acc = 100. * val_correct / max(1, val_total)
             val_f1 = 100. * f1_score(val_labels, val_preds, average='macro', zero_division=0)
         else:
             val_loss = train_loss
@@ -440,8 +483,8 @@ def train(config_path):
         # Logging
         epoch_time = time.time() - start_time
         if criterion_accent is not None:
-            avg_loss_emo = total_loss_emo / len(train_loader)
-            avg_loss_acc = total_loss_acc / len(train_loader)
+            avg_loss_emo = total_loss_emo / max(1, valid_batches_count)
+            avg_loss_acc = (total_loss_acc / accent_batches_count) if accent_batches_count > 0 else 0.0
             logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} L_emo:{avg_loss_emo:.4f} L_acc:{avg_loss_acc:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
         else:
             logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")

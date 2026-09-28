@@ -113,18 +113,25 @@ def compute_class_weights(dataset, num_classes):
 
     weight_i = total_samples / (num_classes * count_i)
 
+    Clamped and normalized so weights.mean() == 1.0 to prevent gradient explosions.
     Returns a torch.FloatTensor of shape [num_classes], suitable for
     nn.CrossEntropyLoss(weight=...).
     """
     counts = np.zeros(num_classes, dtype=np.float64)
-    for entry in dataset.indices:
-        label = entry[1]
-        if 0 <= label < num_classes:
-            counts[label] += 1
+    if hasattr(dataset, 'indices') and dataset.indices:
+        for entry in dataset.indices:
+            label = entry[1]
+            if 0 <= label < num_classes:
+                counts[label] += 1
 
     counts = np.maximum(counts, 1.0)  # avoid div-by-zero for absent classes
     total = counts.sum()
     weights = total / (num_classes * counts)
+    # Clamp extreme weights to prevent unstable gradient scaling
+    weights = np.clip(weights, 0.1, 10.0)
+    # Re-normalize so average loss scale is preserved
+    weights = weights / (weights.mean() + 1e-8)
+    weights = np.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
     return torch.tensor(weights, dtype=torch.float32)
 
 
@@ -135,19 +142,26 @@ def compute_accent_weights(dataset, num_accent_classes):
 
     weight_i = total_valid_samples / (num_accent_classes * count_i)
 
+    Clamped and normalized so weights.mean() == 1.0 to prevent gradient explosions.
     Returns a torch.FloatTensor of shape [num_accent_classes], suitable for
     nn.CrossEntropyLoss(weight=..., ignore_index=-1).
     """
     counts = np.zeros(num_accent_classes, dtype=np.float64)
-    for entry in dataset.indices:
-        if len(entry) >= 3:
-            acc = entry[2]
-            if 0 <= acc < num_accent_classes:
-                counts[acc] += 1
+    if hasattr(dataset, 'indices') and dataset.indices:
+        for entry in dataset.indices:
+            if len(entry) >= 3:
+                acc = entry[2]
+                if 0 <= acc < num_accent_classes:
+                    counts[acc] += 1
 
     counts = np.maximum(counts, 1.0)  # avoid div-by-zero for absent classes
     total = counts.sum()
     weights = total / (num_accent_classes * counts)
+    # Clamp extreme weights to prevent unstable gradient scaling
+    weights = np.clip(weights, 0.1, 10.0)
+    # Re-normalize so average loss scale is preserved
+    weights = weights / (weights.mean() + 1e-8)
+    weights = np.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
     return torch.tensor(weights, dtype=torch.float32)
 
 
