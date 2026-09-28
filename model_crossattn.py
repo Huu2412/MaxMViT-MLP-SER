@@ -260,6 +260,22 @@ class CrossAttentionFusion(nn.Module):
         return fused, attn_info
 
 
+BACKBONE_PRESETS = {
+    'tiny': {
+        'maxvit': 'maxvit_tiny_tf_224',
+        'mvitv2': 'mvitv2_tiny',
+    },
+    'small': {
+        'maxvit': 'maxvit_small_tf_224',
+        'mvitv2': 'mvitv2_small',
+    },
+    'base': {
+        'maxvit': 'maxvit_base_tf_224',
+        'mvitv2': 'mvitv2_base',
+    },
+}
+
+
 class MaxMViT_MLP_CrossAttn(nn.Module):
     """
     MaxMViT-MLP with Cross-Attention Fusion.
@@ -274,12 +290,14 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
         2. Each modality can query relevant information from the other
         3. Learnable inter-modal interactions
         4. Residual connections preserve original features
+        5. Configurable backbone scale: 'tiny', 'small', 'base'
     """
     
     def __init__(self, num_classes=4, hidden_size=512, dropout_rate=0.2,
                  fusion_hidden_dim=None, num_heads=8, fusion_type='concat',
                  num_accent_classes=0,
-                 freeze_backbone=False, unfreeze_last_n_blocks=0):
+                 freeze_backbone=False, unfreeze_last_n_blocks=0,
+                 backbone_size='base', maxvit_variant=None, mvitv2_variant=None):
         """
         Args:
             num_classes: Number of emotion classes
@@ -293,20 +311,28 @@ class MaxMViT_MLP_CrossAttn(nn.Module):
                 overfitting on small datasets like ViSEC.
             unfreeze_last_n_blocks: Number of trailing backbone stages to
                 keep trainable when freeze_backbone=True.
+            backbone_size: Backbone scale: 'tiny', 'small', or 'base' (default 'base').
+            maxvit_variant: Custom timm model name for MaxViT.
+            mvitv2_variant: Custom timm model name for MViTv2.
         """
         super().__init__()
         
+        # Resolve backbone variants
+        preset = BACKBONE_PRESETS.get(backbone_size.lower() if isinstance(backbone_size, str) else 'base', BACKBONE_PRESETS['base'])
+        maxvit_name = maxvit_variant or preset['maxvit']
+        mvitv2_name = mvitv2_variant or preset['mvitv2']
+
         # --- Backbone Networks ---
         # Path 1: CQT → MaxViT
-        self.maxvit = timm.create_model('maxvit_base_tf_224', pretrained=True, num_classes=0)
+        self.maxvit = timm.create_model(maxvit_name, pretrained=True, num_classes=0)
         
         # Path 2: Mel-STFT → MViTv2
-        self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
+        self.mvitv2 = timm.create_model(mvitv2_name, pretrained=True, num_classes=0)
         
-        # Get feature dimensions (fixed at 768 for both base backbones)
-        dim_cqt = 768
-        dim_mel = 768
-        print(f"Feature dims - CQT/MaxViT: {dim_cqt}, Mel/MViTv2: {dim_mel}")
+        # Get feature dimensions dynamically
+        dim_cqt = getattr(self.maxvit, 'num_features', 768)
+        dim_mel = getattr(self.mvitv2, 'num_features', 768)
+        print(f"Feature dims - CQT/MaxViT ({maxvit_name}): {dim_cqt}, Mel/MViTv2 ({mvitv2_name}): {dim_mel}")
 
         # Optionally freeze backbones (transfer-learning regularization)
         self.freeze_backbone = freeze_backbone

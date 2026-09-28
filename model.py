@@ -9,10 +9,26 @@ import os
 
 from utils import freeze_backbone_layers
 
+BACKBONE_PRESETS = {
+    'tiny': {
+        'maxvit': 'maxvit_tiny_tf_224',
+        'mvitv2': 'mvitv2_tiny',
+    },
+    'small': {
+        'maxvit': 'maxvit_small_tf_224',
+        'mvitv2': 'mvitv2_small',
+    },
+    'base': {
+        'maxvit': 'maxvit_base_tf_224',
+        'mvitv2': 'mvitv2_base',
+    },
+}
+
 class MaxMViT_MLP(nn.Module):
     def __init__(self, num_classes=7, hidden_size=512, dropout_rate=0.2,
                  num_accent_classes=0,
-                 freeze_backbone=False, unfreeze_last_n_blocks=0):
+                 freeze_backbone=False, unfreeze_last_n_blocks=0,
+                 backbone_size='base', maxvit_variant=None, mvitv2_variant=None):
         """
         MaxMViT and MViTv2 Fusion Network with Multilayer Perceptron (MaxMViT-MLP).
         
@@ -25,19 +41,24 @@ class MaxMViT_MLP(nn.Module):
                 overfitting on small datasets like ViSEC.
             unfreeze_last_n_blocks (int): Number of trailing backbone stages
                 to keep trainable when freeze_backbone=True.
+            backbone_size (str): Backbone scale: 'tiny', 'small', or 'base' (default 'base').
+            maxvit_variant (str, optional): Custom timm model name for MaxViT.
+            mvitv2_variant (str, optional): Custom timm model name for MViTv2.
         """
         super(MaxMViT_MLP, self).__init__()
         
+        # Resolve backbone variants
+        preset = BACKBONE_PRESETS.get(backbone_size.lower() if isinstance(backbone_size, str) else 'base', BACKBONE_PRESETS['base'])
+        maxvit_name = maxvit_variant or preset['maxvit']
+        mvitv2_name = mvitv2_variant or preset['mvitv2']
+
         # --- Path 1: CQT + MaxViT ---
-        # Using 'maxvit_rmlp_base_rw_224' or similar. 
-        # Paper mentions MaxViT.        # Paper likely uses base/large. Switching to base as per feedback.
-        # MaxViT Base
-        self.maxvit = timm.create_model('maxvit_base_tf_224', pretrained=True, num_classes=0)
-        # MViTv2 Base
-        self.mvitv2 = timm.create_model('mvitv2_base', pretrained=True, num_classes=0)
+        self.maxvit = timm.create_model(maxvit_name, pretrained=True, num_classes=0)
+        # --- Path 2: Mel-STFT + MViTv2 ---
+        self.mvitv2 = timm.create_model(mvitv2_name, pretrained=True, num_classes=0)
 
         # Print config to verify window sizes if possible, or just the model name
-        print(f"Initialized MaxViT: {self.maxvit.default_cfg['architecture']}")
+        print(f"Initialized MaxViT: {getattr(self.maxvit, 'default_cfg', {}).get('architecture', maxvit_name)} | MViTv2: {getattr(self.mvitv2, 'default_cfg', {}).get('architecture', mvitv2_name)}")
 
         # Optionally freeze backbones (transfer-learning regularization)
         self.freeze_backbone = freeze_backbone
@@ -49,9 +70,9 @@ class MaxMViT_MLP(nn.Module):
             print(f"Froze MViTv2 backbone: {f2/1e6:.1f}M frozen / {t2/1e6:.1f}M trainable "
                   f"(last {unfreeze_last_n_blocks} blocks unfrozen)")
         
-        # Calculate feature dimension (fixed at 768 for both base backbones)
-        maxvit_dim = 768
-        mvitv2_dim = 768
+        # Calculate feature dimension dynamically from models
+        maxvit_dim = getattr(self.maxvit, 'num_features', 768)
+        mvitv2_dim = getattr(self.mvitv2, 'num_features', 768)
         fusion_dim = maxvit_dim + mvitv2_dim
         
         # --- MLP Head ---

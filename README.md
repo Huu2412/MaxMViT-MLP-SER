@@ -138,6 +138,10 @@ The attended representations are residual-connected and projected to form the fu
 - `maxvit_unimodal`: MaxViT-only with CQT spectrogram input and self-attention classification head.
 - `mvitv2_unimodal`: MViTv2-only with Mel-STFT spectrogram input and self-attention classification head.
 
+### 5. Advanced Feature Disentanglement & Self-Reconstruction (Research Proposal)
+- Detailed theoretical formulation, Nash equilibrium analysis, PyTorch implementation, and ablation study design are documented in:
+  📄 **[`docs/DISENTANGLED_REPRESENTATION.md`](docs/DISENTANGLED_REPRESENTATION.md)**
+
 ---
 
 ## 🌏 Multi-Task Learning: Regional Accent Adaptation
@@ -259,9 +263,19 @@ pip install -r requirements.txt
 
 ### 1. Single Model Training
 
-To train the optimized **MaxMViT-GMU** model on ViSEC with Multi-Task Regional Accent Adaptation:
+To train the optimized **MaxMViT-GMU (Base, ~171M params)** model on ViSEC:
 ```bash
 python train.py --config configs/visec_optimized.yaml
+```
+
+To train the lightweight **MaxMViT-Tiny (~55M params, low VRAM & fast)** model:
+```bash
+python train.py --config configs/visec_tiny.yaml
+```
+
+To train the balanced **MaxMViT-Small (~104M params)** model:
+```bash
+python train.py --config configs/visec_small.yaml
 ```
 
 To train on the 8-class **RAVDESS** dataset:
@@ -269,11 +283,24 @@ To train on the 8-class **RAVDESS** dataset:
 python train.py --config configs/ravdess.yaml
 ```
 
-### 2. Model Variants Comparison & Ablation
+### 2. Model Variants & Backbone Ablation Studies
 
-To train and benchmark all fusion architectures (**Original Concatenation**, **GMU**, and **Cross-Attention**) sequentially under identical splits and produce an aggregated performance summary:
+Our framework supports benchmarking both **Multimodal Fusion Paradigms** and **Backbone Scales**:
+
+**A. Fusion Ablation (Original vs. GMU vs. Cross-Attention):**
 ```bash
-python train_compare.py --config configs/visec_optimized.yaml
+python train_compare.py --config configs/visec_optimized.yaml --ablation fusion
+```
+
+**B. Backbone Scale Ablation (Tiny vs. Small vs. Base):**
+Evaluate performance, FLOPs, parameter count, and inference latency across backbone scales on the chosen fusion architecture (e.g. GMU):
+```bash
+python train_compare.py --config configs/visec_optimized.yaml --ablation backbone --model_type gmu
+```
+
+**C. Comprehensive Full Ablation (All Combinations):**
+```bash
+python train_compare.py --config configs/visec_optimized.yaml --ablation all
 ```
 
 ### 3. Cross-Dataset Generalization

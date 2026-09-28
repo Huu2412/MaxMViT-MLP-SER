@@ -42,6 +42,10 @@ model:
   type: "gmu"                # options:
                                     #   Dual-backbone (fusion): original | gmu | crossattn
                                     #   Single-backbone (ablation): maxvit_unimodal | mvitv2_unimodal
+  backbone_size: "base"             # options: tiny (~55M) | small (~104M) | base (~171M)
+                                    #   tiny: maxvit_tiny_tf_224 + mvitv2_tiny (Fastest, low VRAM)
+                                    #   small: maxvit_small_tf_224 + mvitv2_small (Balanced)
+                                    #   base: maxvit_base_tf_224 + mvitv2_base (Original heavy)
   num_classes: 4
   hidden_size: 512
   dropout_rate: 0.3                # was 0.2: extra regularization, ~170M params on a

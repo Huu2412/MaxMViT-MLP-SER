@@ -35,14 +35,25 @@ from model_gmu import MaxMViT_MLP_GMU, get_optimizer_gmu
 from model_crossattn import MaxMViT_MLP_CrossAttn, get_optimizer_crossattn
 
 
-def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
+def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_size=None):
     """Factory function to get model and optimizer based on model_type."""
     hidden_size = model_cfg.get('hidden_size', 512)
     dropout_rate = model_cfg.get('dropout_rate', 0.2)
     num_accent_classes = model_cfg.get('num_accent_classes', 0)
+    freeze_backbone = model_cfg.get('freeze_backbone', False)
+    unfreeze_last_n_blocks = model_cfg.get('unfreeze_last_n_blocks', 0)
+    
+    current_backbone_size = backbone_size or model_cfg.get('backbone_size', 'base')
+    maxvit_variant = model_cfg.get('maxvit_variant', None)
+    mvitv2_variant = model_cfg.get('mvitv2_variant', None)
     
     if model_type == 'original':
-        model = MaxMViT_MLP(num_classes=num_classes, hidden_size=hidden_size, dropout_rate=dropout_rate, num_accent_classes=num_accent_classes)
+        model = MaxMViT_MLP(
+            num_classes=num_classes, hidden_size=hidden_size, dropout_rate=dropout_rate,
+            num_accent_classes=num_accent_classes,
+            freeze_backbone=freeze_backbone, unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=current_backbone_size, maxvit_variant=maxvit_variant, mvitv2_variant=mvitv2_variant
+        )
         optimizers = get_optimizer(model, lr=lr)
         
     elif model_type == 'gmu':
@@ -52,7 +63,12 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
             hidden_size=hidden_size, 
             dropout_rate=dropout_rate,
             fusion_hidden_dim=fusion_hidden_dim,
-            num_accent_classes=num_accent_classes
+            num_accent_classes=num_accent_classes,
+            freeze_backbone=freeze_backbone,
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=current_backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
         )
         optimizers = get_optimizer_gmu(model, lr=lr)
         
@@ -67,9 +83,42 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
             fusion_hidden_dim=fusion_hidden_dim,
             num_heads=num_heads,
             fusion_type=fusion_type,
-            num_accent_classes=num_accent_classes
+            num_accent_classes=num_accent_classes,
+            freeze_backbone=freeze_backbone,
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=current_backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
         )
         optimizers = get_optimizer_crossattn(model, lr=lr)
+        
+    elif model_type == 'maxvit_unimodal':
+        from model_unimodal import MaxViT_SelfAttn_MLP, get_optimizer_unimodal
+        model = MaxViT_SelfAttn_MLP(
+            num_classes=num_classes,
+            hidden_size=hidden_size,
+            dropout_rate=dropout_rate,
+            num_accent_classes=num_accent_classes,
+            freeze_backbone=freeze_backbone,
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=current_backbone_size,
+            maxvit_variant=maxvit_variant
+        )
+        optimizers = get_optimizer_unimodal(model, lr=lr)
+        
+    elif model_type == 'mvitv2_unimodal':
+        from model_unimodal import MViTv2_SelfAttn_MLP, get_optimizer_unimodal
+        model = MViTv2_SelfAttn_MLP(
+            num_classes=num_classes,
+            hidden_size=hidden_size,
+            dropout_rate=dropout_rate,
+            num_accent_classes=num_accent_classes,
+            freeze_backbone=freeze_backbone,
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=current_backbone_size,
+            mvitv2_variant=mvitv2_variant
+        )
+        optimizers = get_optimizer_unimodal(model, lr=lr)
         
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
@@ -77,12 +126,12 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg):
     return model, optimizers
 
 
-def train_single_model(model_type, config, train_loader, val_loader, logger):
+def train_single_model(model_type, config, train_loader, val_loader, logger, backbone_size=None, run_name=None):
     """
     Train a single model variant and return results.
     
     Returns:
-        dict with keys: model_type, best_val_acc, best_val_loss, best_epoch, total_time
+        dict with keys: model_type, best_val_acc, best_val_loss, best_epoch, total_time, etc.
     """
     train_cfg = config['training']
     model_cfg = config['model']
@@ -92,9 +141,12 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
     LR = train_cfg.get('lr', 0.0002)
     PATIENCE = train_cfg.get('patience', 10)
     
+    current_backbone_size = backbone_size or model_cfg.get('backbone_size', 'base')
+    display_name = run_name or f"{model_type.upper()}-{current_backbone_size.upper()}"
+
     # Get model
     num_classes = model_cfg.get('num_classes', 4)
-    model, optimizers = get_model_and_optimizer(model_type, num_classes, LR, model_cfg)
+    model, optimizers = get_model_and_optimizer(model_type, num_classes, LR, model_cfg, backbone_size=current_backbone_size)
     model.to(DEVICE)
     
     # Count parameters
@@ -103,7 +155,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
     
     logger.info(f"")
     logger.info(f"{'='*60}")
-    logger.info(f"Training: {model_type.upper()}")
+    logger.info(f"Training: {display_name}")
     logger.info(f"{'='*60}")
     logger.info(f"Total params: {total_params:,}")
     logger.info(f"Trainable params: {trainable_params:,}")
@@ -255,6 +307,8 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
     
     result = {
         'model_type': model_type,
+        'backbone_size': current_backbone_size,
+        'run_name': display_name,
         'best_val_acc': best_val_acc,
         'best_val_loss': best_val_loss,
         'best_epoch': best_epoch,
@@ -270,8 +324,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger):
         'inference_time_batch_ms': inf_time_batch
     }
 
-    
-    logger.info(f"[{model_type}] Finished! Best Acc: {best_val_acc:.2f}% at epoch {best_epoch}")
+    logger.info(f"[{display_name}] Finished! Best Acc: {best_val_acc:.2f}% at epoch {best_epoch}")
     
     # Clean up GPU memory
     del model
@@ -285,21 +338,24 @@ def generate_comparison_table(results, logger):
     
     # Prepare table data
     headers = [
-        "Model", "Fusion Type", "Best Val Acc (%)", "Val UWA (%)", 
+        "Model", "Backbone", "Fusion Type", "Best Val Acc (%)", "Val UWA (%)", 
         "Val mF1 (%)", "FLOPs (G)", "Inf Sample (ms)", "Params (M)"
     ]
     
     fusion_names = {
         'original': 'Concatenation',
         'gmu': 'Gated Multimodal Unit',
-        'crossattn': 'Cross-Attention'
+        'crossattn': 'Cross-Attention',
+        'maxvit_unimodal': 'CQT Unimodal',
+        'mvitv2_unimodal': 'Mel Unimodal'
     }
     
     table_data = []
     for r in results:
         table_data.append([
-            r['model_type'].upper(),
-            fusion_names.get(r['model_type'], 'Unknown'),
+            r.get('run_name', r['model_type'].upper()),
+            r.get('backbone_size', 'base').upper(),
+            fusion_names.get(r['model_type'], r['model_type']),
             f"{r['best_val_acc']:.2f}",
             f"{r.get('val_uwa', 0.0):.2f}",
             f"{r.get('val_mf1', 0.0):.2f}",
@@ -309,7 +365,7 @@ def generate_comparison_table(results, logger):
         ])
     
     # Sort by best accuracy (descending)
-    table_data.sort(key=lambda x: float(x[2]), reverse=True)
+    table_data.sort(key=lambda x: float(x[3]), reverse=True)
     
     # Generate table
     table_str = tabulate(table_data, headers=headers, tablefmt="pipe")
@@ -324,13 +380,21 @@ def generate_comparison_table(results, logger):
     
     # Find winner
     winner = max(results, key=lambda x: x['best_val_acc'])
-    logger.info(f"🏆 WINNER: {winner['model_type'].upper()} with {winner['best_val_acc']:.2f}% accuracy")
+    logger.info(f"🏆 WINNER: {winner.get('run_name', winner['model_type'].upper())} with {winner['best_val_acc']:.2f}% accuracy")
     
     return table_str
 
 
-def train_compare(config_path):
-    """Main function to train and compare all models."""
+def train_compare(config_path, ablation='fusion', backbone_size=None, model_type=None):
+    """
+    Main function to train and compare models.
+    
+    Args:
+        config_path: Path to YAML config.
+        ablation: 'fusion' (original vs gmu vs crossattn) or 'backbone' (tiny vs small vs base) or 'all'.
+        backbone_size: Backbone scale override ('tiny', 'small', 'base').
+        model_type: Specific model type to use for backbone ablation ('gmu', 'crossattn', 'original').
+    """
     
     # Load config
     config = load_config(config_path)
@@ -341,7 +405,7 @@ def train_compare(config_path):
     log_dir = config.get('paths', {}).get('log_dir', 'logs')
     os.makedirs(log_dir, exist_ok=True)
     
-    log_file = os.path.join(log_dir, f"compare_{dataset_name}_{timestamp}.log")
+    log_file = os.path.join(log_dir, f"compare_{dataset_name}_{ablation}_{timestamp}.log")
     
     # Configure logging
     logging.basicConfig(
@@ -355,7 +419,7 @@ def train_compare(config_path):
     logger = logging.getLogger(__name__)
     
     logger.info(f"="*80)
-    logger.info(f"MODEL COMPARISON EXPERIMENT")
+    logger.info(f"MODEL COMPARISON EXPERIMENT (Ablation Mode: {ablation.upper()})")
     logger.info(f"="*80)
     logger.info(f"Dataset: {dataset_name}")
     logger.info(f"Config: {config_path}")
@@ -383,28 +447,41 @@ def train_compare(config_path):
 
     logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
     
-    # Train all 3 models
-    model_types = ['original', 'gmu', 'crossattn']
+    # Determine experiment runs based on ablation mode
+    if ablation == 'backbone':
+        target_model = model_type or config['model'].get('type', 'gmu')
+        scales = ['tiny', 'small', 'base']
+        logger.info(f"Running BACKBONE ABLATION on model '{target_model.upper()}': {scales}")
+        runs = [(target_model, s, f"{target_model.upper()}-{s.upper()}") for s in scales]
+    elif ablation == 'all':
+        fusion_types = ['original', 'gmu', 'crossattn']
+        scales = ['tiny', 'small', 'base']
+        runs = [(m, s, f"{m.upper()}-{s.upper()}") for m in fusion_types for s in scales]
+    else:  # 'fusion'
+        target_scale = backbone_size or config['model'].get('backbone_size', 'base')
+        model_types = ['original', 'gmu', 'crossattn']
+        logger.info(f"Running FUSION ABLATION with backbone scale '{target_scale.upper()}': {model_types}")
+        runs = [(m, target_scale, f"{m.upper()}-{target_scale.upper()}") for m in model_types]
+
     results = []
-    
-    for model_type in model_types:
+    for m_type, b_size, r_name in runs:
         seed_everything(SEED)  # Reset seed for fair comparison
-        result = train_single_model(model_type, config, train_loader, val_loader, logger)
+        result = train_single_model(m_type, config, train_loader, val_loader, logger, backbone_size=b_size, run_name=r_name)
         results.append(result)
     
     # Generate comparison table
     table_str = generate_comparison_table(results, logger)
     
     # Save results as JSON
-    results_file = os.path.join(log_dir, f"compare_{dataset_name}_{timestamp}_results.json")
+    results_file = os.path.join(log_dir, f"compare_{dataset_name}_{ablation}_{timestamp}_results.json")
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
     logger.info(f"Results saved to: {results_file}")
     
     # Save markdown table
-    table_file = os.path.join(log_dir, f"compare_{dataset_name}_{timestamp}_table.md")
+    table_file = os.path.join(log_dir, f"compare_{dataset_name}_{ablation}_{timestamp}_table.md")
     with open(table_file, 'w') as f:
-        f.write(f"# Model Comparison Results\n\n")
+        f.write(f"# Model Comparison Results (Ablation: {ablation.upper()})\n\n")
         f.write(f"**Dataset:** {dataset_name}\n\n")
         f.write(f"**Date:** {timestamp}\n\n")
         f.write(table_str)
@@ -413,7 +490,10 @@ def train_compare(config_path):
         # Add detailed results
         f.write("## Detailed Results\n\n")
         for r in results:
-            f.write(f"### {r['model_type'].upper()}\n")
+            run_title = r.get('run_name', f"{r['model_type'].upper()}-{r.get('backbone_size', 'base').upper()}")
+            f.write(f"### {run_title}\n")
+            f.write(f"- Backbone Scale: **{r.get('backbone_size', 'base').upper()}**\n")
+            f.write(f"- Fusion Paradigm: **{r['model_type'].upper()}**\n")
             f.write(f"- Best Val Accuracy: **{r['best_val_acc']:.2f}%**\n")
             f.write(f"- Best Val Loss: {r['best_val_loss']:.4f}\n")
             f.write(f"- Best Epoch: {r['best_epoch']}\n")
@@ -438,6 +518,12 @@ def train_compare(config_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and compare all model variants")
     parser.add_argument("--config", type=str, required=True, help="Path to config yaml")
+    parser.add_argument("--ablation", type=str, choices=['fusion', 'backbone', 'all'], default='fusion',
+                        help="Ablation type: 'fusion' (compare original vs gmu vs crossattn), 'backbone' (compare tiny vs small vs base), or 'all'")
+    parser.add_argument("--backbone_size", type=str, choices=['tiny', 'small', 'base'], default=None,
+                        help="Override backbone size for fusion ablation (e.g. tiny, small, base)")
+    parser.add_argument("--model_type", type=str, choices=['original', 'gmu', 'crossattn', 'maxvit_unimodal', 'mvitv2_unimodal'], default=None,
+                        help="Specific fusion architecture to use when doing backbone ablation (default from config, typically gmu)")
     args = parser.parse_args()
     
-    train_compare(args.config)
+    train_compare(args.config, ablation=args.ablation, backbone_size=args.backbone_size, model_type=args.model_type)

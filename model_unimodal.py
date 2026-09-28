@@ -36,11 +36,15 @@ class MaxViT_SelfAttn_MLP(nn.Module):
     """
     def __init__(self, num_classes=4, hidden_size=512, dropout_rate=0.3, num_heads=8,
                  num_accent_classes=0,
-                 freeze_backbone=False, unfreeze_last_n_blocks=0):
+                 freeze_backbone=False, unfreeze_last_n_blocks=0,
+                 backbone_size='base', maxvit_variant=None):
         super().__init__()
-        # 1. Backbone: MaxViT base
-        self.backbone = timm.create_model('maxvit_base_tf_224', pretrained=True, num_classes=0)
-        self.feature_dim = 768  # fixed for maxvit_base
+        # 1. Backbone: MaxViT variant
+        preset_names = {'tiny': 'maxvit_tiny_tf_224', 'small': 'maxvit_small_tf_224', 'base': 'maxvit_base_tf_224'}
+        maxvit_name = maxvit_variant or preset_names.get(backbone_size.lower() if isinstance(backbone_size, str) else 'base', 'maxvit_base_tf_224')
+        self.backbone = timm.create_model(maxvit_name, pretrained=True, num_classes=0)
+        self.feature_dim = getattr(self.backbone, 'num_features', 768)
+        print(f"Initialized MaxViT unimodal backbone ({maxvit_name}) with feature dim: {self.feature_dim}")
 
         # Optionally freeze backbone
         if freeze_backbone:
@@ -107,11 +111,15 @@ class MViTv2_SelfAttn_MLP(nn.Module):
     """
     def __init__(self, num_classes=4, hidden_size=512, dropout_rate=0.3, num_heads=8,
                  num_accent_classes=0,
-                 freeze_backbone=False, unfreeze_last_n_blocks=0):
+                 freeze_backbone=False, unfreeze_last_n_blocks=0,
+                 backbone_size='base', mvitv2_variant=None):
         super().__init__()
-        # 1. Backbone: MViTv2 small (outputs sequence features directly)
-        self.backbone = timm.create_model('mvitv2_small', pretrained=True, num_classes=0)
-        self.feature_dim = 768  # fixed for mvitv2_small
+        # 1. Backbone: MViTv2 variant
+        preset_names = {'tiny': 'mvitv2_tiny', 'small': 'mvitv2_small', 'base': 'mvitv2_base'}
+        mvitv2_name = mvitv2_variant or preset_names.get(backbone_size.lower() if isinstance(backbone_size, str) else 'base', 'mvitv2_base')
+        self.backbone = timm.create_model(mvitv2_name, pretrained=True, num_classes=0)
+        self.feature_dim = getattr(self.backbone, 'num_features', 768)
+        print(f"Initialized MViTv2 unimodal backbone ({mvitv2_name}) with feature dim: {self.feature_dim}")
 
         # Optionally freeze backbone
         if freeze_backbone:

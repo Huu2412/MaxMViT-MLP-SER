@@ -64,11 +64,16 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
     dropout_rate = model_cfg.get('dropout_rate', 0.2)
     freeze_backbone = model_cfg.get('freeze_backbone', False)
     unfreeze_last_n_blocks = model_cfg.get('unfreeze_last_n_blocks', 0)
+    backbone_size = model_cfg.get('backbone_size', 'base')
+    maxvit_variant = model_cfg.get('maxvit_variant', None)
+    mvitv2_variant = model_cfg.get('mvitv2_variant', None)
 
-    if freeze_backbone and is_main_process():
-        logging.info(f"Backbone freezing ENABLED (unfreeze_last_n_blocks={unfreeze_last_n_blocks})")
-    if (backbone_lr is not None or head_lr is not None) and is_main_process():
-        logging.info(f"Discriminative LR: backbone_lr={backbone_lr}, head_lr={head_lr}")
+    if is_main_process():
+        logging.info(f"Backbone configuration: scale='{backbone_size}' | MaxViT: {maxvit_variant or backbone_size} | MViTv2: {mvitv2_variant or backbone_size}")
+        if freeze_backbone:
+            logging.info(f"Backbone freezing ENABLED (unfreeze_last_n_blocks={unfreeze_last_n_blocks})")
+        if backbone_lr is not None or head_lr is not None:
+            logging.info(f"Discriminative LR: backbone_lr={backbone_lr}, head_lr={head_lr}")
     
     if model_type == 'original':
         if is_main_process(): logging.info("Using Original Model (Simple Concatenation Fusion)")
@@ -76,7 +81,8 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
         model = MaxMViT_MLP(
             num_classes=num_classes, hidden_size=hidden_size, dropout_rate=dropout_rate,
             num_accent_classes=num_accent_classes,
-            freeze_backbone=freeze_backbone, unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            freeze_backbone=freeze_backbone, unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size, maxvit_variant=maxvit_variant, mvitv2_variant=mvitv2_variant
         )
         optimizers = get_optimizer(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
         
@@ -91,7 +97,10 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
             fusion_hidden_dim=fusion_hidden_dim,
             num_accent_classes=num_accent_classes,
             freeze_backbone=freeze_backbone,
-            unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
         )
         optimizers = get_optimizer_gmu(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
         
@@ -110,7 +119,10 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
             fusion_type=fusion_type,
             num_accent_classes=num_accent_classes,
             freeze_backbone=freeze_backbone,
-            unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
         )
         optimizers = get_optimizer_crossattn(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
         
@@ -124,7 +136,9 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
             dropout_rate=dropout_rate,
             num_accent_classes=num_accent_classes,
             freeze_backbone=freeze_backbone,
-            unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            maxvit_variant=maxvit_variant
         )
         optimizers = get_optimizer_unimodal(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
         
@@ -138,7 +152,9 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
             dropout_rate=dropout_rate,
             num_accent_classes=num_accent_classes,
             freeze_backbone=freeze_backbone,
-            unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            mvitv2_variant=mvitv2_variant
         )
         optimizers = get_optimizer_unimodal(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
         

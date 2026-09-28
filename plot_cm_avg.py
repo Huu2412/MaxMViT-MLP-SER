@@ -141,6 +141,9 @@ def create_model(model_type, num_classes, model_cfg):
     num_accent_classes = model_cfg.get('num_accent_classes', 0)
     freeze_backbone = model_cfg.get('freeze_backbone', False)
     unfreeze_last_n_blocks = model_cfg.get('unfreeze_last_n_blocks', 0)
+    backbone_size = model_cfg.get('backbone_size', 'base')
+    maxvit_variant = model_cfg.get('maxvit_variant', None)
+    mvitv2_variant = model_cfg.get('mvitv2_variant', None)
 
     if model_type == 'gmu':
         from model_gmu import MaxMViT_MLP_GMU
@@ -152,7 +155,10 @@ def create_model(model_type, num_classes, model_cfg):
             fusion_hidden_dim=fusion_hidden_dim,
             num_accent_classes=num_accent_classes,
             freeze_backbone=freeze_backbone,
-            unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
         )
     elif model_type == 'crossattn':
         from model_crossattn import MaxMViT_MLP_CrossAttn
@@ -168,14 +174,20 @@ def create_model(model_type, num_classes, model_cfg):
             fusion_type=fusion_type,
             num_accent_classes=num_accent_classes,
             freeze_backbone=freeze_backbone,
-            unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
         )
     elif model_type == 'original':
         from model import MaxMViT_MLP
         model = MaxMViT_MLP(
             num_classes=num_classes, hidden_size=hidden_size, dropout_rate=dropout_rate,
             num_accent_classes=num_accent_classes,
-            freeze_backbone=freeze_backbone, unfreeze_last_n_blocks=unfreeze_last_n_blocks
+            freeze_backbone=freeze_backbone, unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
         )
     else:
         raise ValueError(f"Unknown model_type: {model_type}")

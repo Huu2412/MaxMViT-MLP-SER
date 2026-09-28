@@ -1,0 +1,80 @@
+experiment_name: "visec_tiny"
+
+# ============================================================================
+# Optimized Lightweight Config for ViSEC (MaxMViT-Tiny + GMU Fusion)
+# Total Parameters: ~55.3M (compared to ~171M on Base)
+# - MaxViT: maxvit_tiny_tf_224 (~30.9M)
+# - MViTv2: mvitv2_tiny (~24.4M)
+# Much lower VRAM footprint, faster training & inference, less prone to overfitting
+# ============================================================================
+
+dataset:
+  name: "visec"
+  args:
+    hf_id: "hustep-lab/ViSEC"
+    batch_size: 8                  # Can safely use 8 on 15GB VRAM thanks to Tiny backbone
+    num_workers: 4
+    split_ratio: [0.8, 0.1, 0.1]   # 80% Train, 10% Val, 10% Test
+    target_size: [224, 224]
+    spec_augment:
+      freq_mask_param: 27
+      time_mask_param: 30
+      num_freq_masks: 1
+      num_time_masks: 2
+      prob: 0.5
+    waveform_augment:
+      prob: 0.7
+      pitch_shift:
+        weight: 0.4
+        n_steps_range: [-1.0, 1.0]
+      noise_injection:
+        weight: 0.4
+        noise_factor_range: [0.001, 0.015]
+      time_shift:
+        weight: 0.2
+        range: [0.9, 1.1]
+
+model:
+  name: "maxmvit_mlp"
+  type: "gmu"                # options: original | gmu | crossattn | maxvit_unimodal | mvitv2_unimodal
+  backbone_size: "tiny"      # Tiny backbone scale (~55M params total)
+  num_classes: 4
+  hidden_size: 512
+  dropout_rate: 0.25         # Slightly lower dropout than base since model is smaller
+  num_heads: 8
+  fusion_type: "concat"
+
+training:
+  epochs: 50
+  patience: 10
+  seed: 42
+  device: "cuda"
+
+  # Learning rate
+  lr: 0.0002
+  backbone_lr: 0.0001        # Pretrained backbone LR
+  head_lr: 0.0005            # Head LR
+
+  # Acceleration & Regularization
+  amp: true
+  label_smoothing: 0.05
+  class_weight: true
+  grad_clip_norm: 1.0
+  checkpoint_metric: "macro_f1"
+
+  scheduler:
+    type: "cosine"
+    min_lr: 1e-6
+    warmup_epochs: 3
+
+# Regional Accent Auxiliary Task (RR Loss)
+auxiliary_task:
+  enabled: true
+  task: "accent"
+  num_accent_classes: 3
+  alpha: 0.8
+  accent_weights: [0.2, 0.56, 2.24]
+
+paths:
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
