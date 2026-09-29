@@ -69,7 +69,9 @@ def main(config_path, checkpoint_path, output_img):
             with torch.amp.autocast('cuda', enabled=torch.cuda.is_available()):
                 model_output = model(cqt, mel)
                 
-            if isinstance(model_output, tuple):
+            if isinstance(model_output, dict):
+                outputs = model_output['emotion_logits']
+            elif isinstance(model_output, tuple):
                 outputs, _ = model_output
             else:
                 outputs = model_output

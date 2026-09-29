@@ -33,6 +33,7 @@ from data_loaders import get_dataloaders
 from model import MaxMViT_MLP, get_optimizer
 from model_gmu import MaxMViT_MLP_GMU, get_optimizer_gmu
 from model_crossattn import MaxMViT_MLP_CrossAttn, get_optimizer_crossattn
+from model_disentangled import MaxMViT_MLP_Disentangled, get_optimizer_disentangled
 
 
 def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_size=None):
@@ -118,8 +119,24 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_siz
             backbone_size=current_backbone_size,
             mvitv2_variant=mvitv2_variant
         )
-        optimizers = get_optimizer_unimodal(model, lr=lr)
-        
+    elif model_type == 'disentangled':
+        fusion_hidden_dim = model_cfg.get('fusion_hidden_dim', None)
+        sub_dim = model_cfg.get('sub_dim', 256)
+        model = MaxMViT_MLP_Disentangled(
+            num_classes=num_classes,
+            hidden_size=hidden_size,
+            dropout_rate=dropout_rate,
+            sub_dim=sub_dim,
+            fusion_dim=fusion_hidden_dim,
+            num_accent_classes=num_accent_classes,
+            freeze_backbone=freeze_backbone,
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=current_backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
+        )
+        optimizers = get_optimizer_disentangled(model, lr=lr)
+
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
         
@@ -194,7 +211,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger, bac
             for opt in optimizers: opt.zero_grad()
             
             model_out = model(cqt, mel)
-            outputs = model_out[0] if isinstance(model_out, tuple) else model_out
+            outputs = model_out['emotion_logits'] if isinstance(model_out, dict) else (model_out[0] if isinstance(model_out, tuple) else model_out)
             loss = criterion(outputs, label)
             
             if not torch.isfinite(loss):
@@ -227,7 +244,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger, bac
             for batch in val_loader:
                 cqt, mel, label = batch[0].to(DEVICE), batch[1].to(DEVICE), batch[2].to(DEVICE)
                 model_out = model(cqt, mel)
-                outputs = model_out[0] if isinstance(model_out, tuple) else model_out
+                outputs = model_out['emotion_logits'] if isinstance(model_out, dict) else (model_out[0] if isinstance(model_out, tuple) else model_out)
                 loss = criterion(outputs, label)
                 val_loss += loss.item()
                 _, predicted = outputs.max(1)
@@ -294,7 +311,7 @@ def train_single_model(model_type, config, train_loader, val_loader, logger, bac
             cqt, mel, label = batch[0].to(DEVICE), batch[1].to(DEVICE), batch[2]
             start_t = time.time()
             model_out = model(cqt, mel)
-            outputs = model_out[0] if isinstance(model_out, tuple) else model_out
+            outputs = model_out['emotion_logits'] if isinstance(model_out, dict) else (model_out[0] if isinstance(model_out, tuple) else model_out)
             elapsed = time.time() - start_t
             
             if idx < num_batches_to_time:

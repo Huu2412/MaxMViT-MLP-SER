@@ -34,6 +34,7 @@ from data_loaders.factory import get_dataloaders_ddp
 from model import MaxMViT_MLP, get_optimizer
 from model_gmu import MaxMViT_MLP_GMU, get_optimizer_gmu
 from model_crossattn import MaxMViT_MLP_CrossAttn, get_optimizer_crossattn
+from model_disentangled import MaxMViT_MLP_Disentangled, get_optimizer_disentangled, DisentangledConstraintLoss
 
 
 def is_main_process():
@@ -158,8 +159,28 @@ def get_model_and_optimizer(model_type, num_classes, lr, model_cfg, backbone_lr=
         )
         optimizers = get_optimizer_unimodal(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
         
+    elif model_type == 'disentangled':
+        if is_main_process(): logging.info("Using Disentangled Model (Shared-Private Decomposition + 3-Way GMU Fusion)")
+        fusion_hidden_dim = model_cfg.get('fusion_hidden_dim', None)
+        sub_dim = model_cfg.get('sub_dim', 256)
+        num_accent_classes = model_cfg.get('num_accent_classes', 0)
+        model = MaxMViT_MLP_Disentangled(
+            num_classes=num_classes,
+            hidden_size=hidden_size,
+            dropout_rate=dropout_rate,
+            sub_dim=sub_dim,
+            fusion_dim=fusion_hidden_dim,
+            num_accent_classes=num_accent_classes,
+            freeze_backbone=freeze_backbone,
+            unfreeze_last_n_blocks=unfreeze_last_n_blocks,
+            backbone_size=backbone_size,
+            maxvit_variant=maxvit_variant,
+            mvitv2_variant=mvitv2_variant
+        )
+        optimizers = get_optimizer_disentangled(model, lr=lr, backbone_lr=backbone_lr, head_lr=head_lr)
+
     else:
-        raise ValueError(f"Unknown model_type: {model_type}. Choose from: original, gmu, crossattn, maxvit_unimodal, mvitv2_unimodal")
+        raise ValueError(f"Unknown model_type: {model_type}. Choose from: original, gmu, crossattn, maxvit_unimodal, mvitv2_unimodal, disentangled")
         
     return model, optimizers
 
@@ -268,7 +289,12 @@ def train_ddp(config_path):
     model.to(device)
     
     # ── Wrap model with DDP ──
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+    find_unused = train_cfg.get('find_unused_parameters', None)
+    if find_unused is None:
+        find_unused = (model_type == 'disentangled') or (num_accent_classes > 0)
+    if is_main_process():
+        logging.info(f"DDP find_unused_parameters: {find_unused}")
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=find_unused)
 
     # AMP GradScaler
     scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
@@ -332,6 +358,23 @@ def train_ddp(config_path):
         if is_main_process():
             logging.info(f"Accent auxiliary task configured: alpha={aux_alpha}")
     
+    # Disentanglement constraint loss (only for disentangled model)
+    disentangle_cfg = config.get('disentangle', {})
+    disentangle_enabled = disentangle_cfg.get('enable', False) and model_type == 'disentangled'
+    criterion_disentangle = None
+    if disentangle_enabled:
+        dis_beta = disentangle_cfg.get('beta_recon', 0.1)
+        dis_gamma = disentangle_cfg.get('gamma_sim', 0.05)
+        dis_delta = disentangle_cfg.get('delta_orth', 0.05)
+        dis_warmup = disentangle_cfg.get('warmup_epochs', 5)
+        criterion_disentangle = DisentangledConstraintLoss(
+            weight_recon=dis_beta, weight_sim=dis_gamma,
+            weight_orth=dis_delta, warmup_epochs=dis_warmup
+        )
+        if is_main_process():
+            logging.info(f"Disentanglement constraints ENABLED: β_recon={dis_beta}, "
+                         f"γ_sim={dis_gamma}, δ_orth={dis_delta}, warmup={dis_warmup} epochs")
+    
     # Class names for detailed prediction metrics and reporting
     class_names = getattr(val_loader.dataset if val_loader else train_loader.dataset, 'target_classes', None)
     if class_names is None:
@@ -356,10 +399,12 @@ def train_ddp(config_path):
         total_loss = 0
         total_loss_emo = 0
         total_loss_acc = 0
+        total_loss_dis = 0
         correct = 0
         total = 0
         valid_batches_count = 0
         accent_batches_count = 0
+        dis_batches_count = 0
         start_time = time.time()
         
         for batch_idx, batch in enumerate(train_loader):
@@ -381,7 +426,10 @@ def train_ddp(config_path):
             
             with torch.amp.autocast('cuda', enabled=USE_AMP):
                 model_output = model(cqt, mel)
-                if isinstance(model_output, tuple):
+                if isinstance(model_output, dict):
+                    outputs = model_output['emotion_logits']
+                    accent_logits = model_output.get('accent_logits', None)
+                elif isinstance(model_output, tuple):
                     outputs, accent_logits = model_output
                 else:
                     outputs = model_output
@@ -408,6 +456,24 @@ def train_ddp(config_path):
                         else:
                             if is_main_process():
                                 logging.warning(f"Epoch {epoch+1} Batch {batch_idx}: Non-finite loss_acc. Ignoring accent loss.")
+
+                # Disentanglement auxiliary losses (L_recon + L_sim + L_orth)
+                loss_dis_value = 0.0
+                if criterion_disentangle is not None and isinstance(model_output, dict):
+                    dis_loss, dis_dict = criterion_disentangle(
+                        z_cqt=model_output['z_cqt'], z_mel=model_output['z_mel'],
+                        h_cqt_s=model_output['h_cqt_s'], h_cqt_p=model_output['h_cqt_p'],
+                        z_cqt_recon=model_output['z_cqt_recon'],
+                        h_mel_s=model_output['h_mel_s'], h_mel_p=model_output['h_mel_p'],
+                        z_mel_recon=model_output['z_mel_recon'],
+                        current_epoch=epoch
+                    )
+                    if torch.isfinite(dis_loss):
+                        loss = loss + dis_loss
+                        loss_dis_value = dis_loss.item()
+                    else:
+                        if is_main_process():
+                            logging.warning(f"Epoch {epoch+1} Batch {batch_idx}: Non-finite disentangle loss. Ignoring.")
 
             if not torch.isfinite(loss):
                 if is_main_process():
@@ -448,6 +514,9 @@ def train_ddp(config_path):
             if loss_acc_value > 0.0:
                 total_loss_acc += loss_acc_value
                 accent_batches_count += 1
+            if loss_dis_value > 0.0:
+                total_loss_dis += loss_dis_value
+                dis_batches_count += 1
             valid_batches_count += 1
             
             _, predicted = outputs.max(1)
@@ -482,7 +551,9 @@ def train_ddp(config_path):
                     
                     with torch.amp.autocast('cuda', enabled=USE_AMP):
                         model_output = model(cqt, mel)
-                        if isinstance(model_output, tuple):
+                        if isinstance(model_output, dict):
+                            outputs = model_output['emotion_logits']
+                        elif isinstance(model_output, tuple):
                             outputs, _ = model_output
                         else:
                             outputs = model_output
@@ -515,12 +586,14 @@ def train_ddp(config_path):
         # ── Only rank 0 handles logging, checkpointing, early stopping ──
         if is_main_process():
             epoch_time = time.time() - start_time
+            avg_loss_dis = (total_loss_dis / dis_batches_count) if dis_batches_count > 0 else 0.0
+            dis_str = f" L_dis:{avg_loss_dis:.4f}" if criterion_disentangle is not None else ""
             if criterion_accent is not None:
                 avg_loss_emo = total_loss_emo / max(1, valid_batches_count)
                 avg_loss_acc = (total_loss_acc / accent_batches_count) if accent_batches_count > 0 else 0.0
-                logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} L_emo:{avg_loss_emo:.4f} L_acc:{avg_loss_acc:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
+                logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} L_emo:{avg_loss_emo:.4f} L_acc:{avg_loss_acc:.4f}{dis_str} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
             else:
-                logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
+                logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f}{dis_str} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
             
             # Compute detailed metrics on validation predictions
             detailed_metrics = None
@@ -630,7 +703,9 @@ def train_ddp(config_path):
                     model_output = model(cqt, mel)
                     total_time += time.time() - start_t
                     
-                    if isinstance(model_output, tuple):
+                    if isinstance(model_output, dict):
+                        outputs = model_output['emotion_logits']
+                    elif isinstance(model_output, tuple):
                         outputs, _ = model_output
                     else:
                         outputs = model_output
