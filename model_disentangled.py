@@ -148,10 +148,13 @@ class DisentangledConstraintLoss(nn.Module):
         self.warmup_epochs = warmup_epochs
     
     def get_warmup_scale(self, current_epoch):
-        """Tính hệ số warm-up tuyến tính: 0 → 1 trong warmup_epochs."""
+        """Tính hệ số warm-up tuyến tính: 0 → 1 trong warmup_epochs.
+        current_epoch: 0-indexed (0 cho Epoch 1, 1 cho Epoch 2, ...)
+        Epoch 1 bắt đầu ở mức 1/warmup_epochs, đạt 1.0 ở Epoch warmup_epochs.
+        """
         if self.warmup_epochs <= 0:
             return 1.0
-        return min(1.0, max(0.0, current_epoch / self.warmup_epochs))
+        return min(1.0, max(0.0, (current_epoch + 1) / self.warmup_epochs))
     
     def forward(self, z_cqt, z_mel, h_cqt_s, h_cqt_p, z_cqt_recon,
                 h_mel_s, h_mel_p, z_mel_recon, current_epoch=0):

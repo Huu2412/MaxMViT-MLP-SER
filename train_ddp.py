@@ -362,6 +362,7 @@ def train_ddp(config_path):
     disentangle_cfg = config.get('disentangle', {})
     disentangle_enabled = disentangle_cfg.get('enable', False) and model_type == 'disentangled'
     criterion_disentangle = None
+    dis_warmup = 0
     if disentangle_enabled:
         dis_beta = disentangle_cfg.get('beta_recon', 0.1)
         dis_gamma = disentangle_cfg.get('gamma_sim', 0.05)
@@ -514,7 +515,7 @@ def train_ddp(config_path):
             if loss_acc_value > 0.0:
                 total_loss_acc += loss_acc_value
                 accent_batches_count += 1
-            if loss_dis_value > 0.0:
+            if criterion_disentangle is not None and isinstance(model_output, dict):
                 total_loss_dis += loss_dis_value
                 dis_batches_count += 1
             valid_batches_count += 1
@@ -587,11 +588,12 @@ def train_ddp(config_path):
         if is_main_process():
             epoch_time = time.time() - start_time
             avg_loss_dis = (total_loss_dis / dis_batches_count) if dis_batches_count > 0 else 0.0
-            dis_str = f" L_dis:{avg_loss_dis:.4f}" if criterion_disentangle is not None else ""
+            wm_scale = min(1.0, (epoch + 1) / dis_warmup) if (criterion_disentangle is not None and dis_warmup > 0) else 1.0
+            dis_str = f" L_dis:{avg_loss_dis:.4f} (wm:{wm_scale*100:.0f}%)" if criterion_disentangle is not None else ""
             if criterion_accent is not None:
                 avg_loss_emo = total_loss_emo / max(1, valid_batches_count)
                 avg_loss_acc = (total_loss_acc / accent_batches_count) if accent_batches_count > 0 else 0.0
-                logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} L_emo:{avg_loss_emo:.4f} L_acc:{avg_loss_acc:.4f}{dis_str} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
+                logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f} L_emo:{avg_loss_emo:.4f} L_acc:{avg_loss_acc:.4f} (α*L:{aux_alpha*avg_loss_acc:.4f}){dis_str} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
             else:
                 logging.info(f"Epoch {epoch+1:02d} | Train [L:{train_loss:.4f}{dis_str} A:{train_acc:.1f}%] | Val [L:{val_loss:.4f} A:{val_acc:.1f}% mF1:{val_f1:.1f}%] | Time: {epoch_time:.1f}s")
             
